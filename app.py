@@ -1,7 +1,7 @@
 import streamlit as st
 from supabase import create_client, Client
 from pyluach import dates, hebrewcal, gematria
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import pytz
 import pandas as pd
 import re
@@ -181,6 +181,9 @@ def fetch_slots(filter_date=None, only_available: bool = False):
     q = supabase.table("slots").select("*")
     if filter_date:
         q = q.eq("date", filter_date.isoformat())
+    elif only_available:
+        tomorrow = (now_il().date() + timedelta(days=1)).isoformat()
+        q = q.gte("date", tomorrow)
     if only_available:
         q = q.eq("is_booked", False)
     return q.order("date").order("time_slot").execute().data or []
@@ -229,6 +232,12 @@ def get_mode() -> str:
 # USER VIEW
 # ═══════════════════════════════════════════════════════════════
 def user_view():
+    def slot_range_label(start_time: str) -> str:
+        t = start_time[:5]  # handle both HH:MM and HH:MM:SS from DB
+        start_dt = datetime.strptime(t, "%H:%M")
+        end_dt = start_dt + timedelta(hours=1)
+        return f"{t} - {end_dt.strftime('%H:%M')}"
+
     st.markdown("""
     <div class="hero">
         <h1>📅 תיאום Dry Run</h1>
@@ -260,12 +269,13 @@ def user_view():
 
     if my_slot:
         gd = date.fromisoformat(my_slot["date"])
+        slot_range = slot_range_label(my_slot["time_slot"])
         st.markdown(f"""
         <div class="my-slot">
             <h2>✅ הפגישה שלך</h2>
             <div class="row">📅 {gd.strftime('%A, %d %B %Y')}</div>
             <div class="heb">{to_heb(gd)}</div>
-            <div class="row">🕐 {my_slot['time_slot']}</div>
+            <div class="row">🕐 {slot_range}</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -276,7 +286,7 @@ def user_view():
 
         if st.session_state.get("confirm_cancel"):
             with st.container(border=True):
-                st.warning(f"לבטל את **{gd.strftime('%d/%m/%Y')} @ {my_slot['time_slot']}**?")
+                st.warning(f"לבטל את **{gd.strftime('%d/%m/%Y')} @ {slot_range}**?")
                 c1, c2 = st.columns(2)
                 if c1.button("כן, בטלי", type="primary", use_container_width=True):
                     cancel_slot(my_slot["id"])
@@ -303,10 +313,11 @@ def user_view():
                 rows = list(group.iterrows())
                 cols = st.columns(min(len(rows), 4))
                 for idx, (_, row) in enumerate(rows):
-                    if cols[idx % 4].button(f"🕐 {row['time_slot']}", key=f"s_{row['id']}"):
+                    slot_range = slot_range_label(row["time_slot"])
+                    if cols[idx % 4].button(f"🕐 {slot_range}", key=f"s_{row['id']}"):
                         st.session_state.pending_slot = {
                             "id": row["id"], "date": slot_date_str,
-                            "time": row["time_slot"], "heb": to_heb(gd),
+                            "time": row["time_slot"], "time_range": slot_range, "heb": to_heb(gd),
                         }
 
             if st.session_state.get("pending_slot"):
@@ -317,7 +328,8 @@ def user_view():
                     st.markdown(f"""
                     - 📅 **{gd_p.strftime('%A, %d %B %Y')}**
                     - <span dir="rtl">{ps['heb']}</span>
-                    - 🕐 **{ps['time']}**
+                    - 🕐 **{ps['time_range']}**
+                    - ⏳ **שעת התחלה:** {ps['time']} | **שעת סיום:** {ps['time_range'].split(' - ')[1]}
                     - 👤 **{user['name']}**
                     """, unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
@@ -338,6 +350,12 @@ def user_view():
 # ADMIN VIEW
 # ═══════════════════════════════════════════════════════════════
 def admin_view():
+    def slot_range_label(start_time: str) -> str:
+        t = start_time[:5]  # handle both HH:MM and HH:MM:SS from DB
+        start_dt = datetime.strptime(t, "%H:%M")
+        end_dt = start_dt + timedelta(hours=1)
+        return f"{t} - {end_dt.strftime('%H:%M')}"
+
     st.markdown("""
     <div class="hero">
         <h1>🔧 Admin Dashboard</h1>
@@ -365,18 +383,40 @@ def admin_view():
         with st.container(border=True):
             st.markdown('<p class="sec-title">➕ הוספת מועד</p>', unsafe_allow_html=True)
             c1, c2 = st.columns(2)
-            sel_date = c1.date_input("תאריך", value=date.today(), min_value=date.today(),
+            today_il = now_il().date()
+            tomorrow_il = today_il + timedelta(days=1)
+            sel_date = c1.date_input("תאריך", value=tomorrow_il, min_value=tomorrow_il,
                                      format="DD/MM/YYYY")
-            time_opts = [f"{h:02d}:{m:02d}" for h in range(7, 22) for m in (0, 15, 30, 45)]
-            time_slot = c2.selectbox("שעה", time_opts, index=12)
+            # Only full hours; exclude times already saved for this date
+            all_hour_opts = [f"{h:02d}:00" for h in range(7, 22)]
+            if sel_date:
+                taken = {
+                    s["time_slot"][:5]
+                    for s in fetch_slots(filter_date=sel_date)
+                }
+                available_opts = [t for t in all_hour_opts if t not in taken]
+            else:
+                available_opts = all_hour_opts
+            if not available_opts:
+                c2.warning("כל השעות לתאריך זה כבר תפוסות.")
+                time_slot = None
+            else:
+                time_slot = c2.selectbox(
+                    "שעה (משך כל פגישה: שעה)",
+                    available_opts,
+                    format_func=slot_range_label,
+                )
             if sel_date:
                 st.markdown(
                     f'<p style="color:#6b21a8;font-size:17px;direction:rtl;">'
                     f'📜 {to_heb(sel_date)}</p>',
                     unsafe_allow_html=True,
                 )
+                st.caption(f"משך המועד: {slot_range_label(time_slot)}")
             if st.button("💾 שמור מועד", type="primary", use_container_width=True):
-                if add_slot(sel_date, time_slot):
+                if not time_slot:
+                    st.warning("אין שעות פנויות לתאריך זה.")
+                elif add_slot(sel_date, time_slot):
                     st.success("✅ מועד נוסף!")
                     st.rerun()
                 else:
@@ -401,7 +441,7 @@ def admin_view():
                     )
                     for _, row in group.iterrows():
                         c1, c2, c3, c4 = st.columns([1.5, 3, 1.5, 0.7])
-                        c1.markdown(f"**🕐 {row['time_slot']}**")
+                        c1.markdown(f"**🕐 {slot_range_label(row['time_slot'])}**")
                         if row["is_booked"]:
                             c2.markdown(
                                 f'<span class="badge b-booked">✅ {row.get("booked_by","?")} '
