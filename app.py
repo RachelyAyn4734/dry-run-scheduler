@@ -6,6 +6,13 @@ import pytz
 import pandas as pd
 import re
 
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    _GCAL_AVAILABLE = True
+except ImportError:
+    _GCAL_AVAILABLE = False
+
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="תיאום Dry Run",
@@ -48,6 +55,66 @@ def to_heb_short(d: date) -> str:
     return (f"{gematria._num_to_str(hd.day)} "
             f"{_HEB_MONTHS.get(hd.month, '')} "
             f"{gematria._num_to_str(hd.year % 1000)}")
+
+# ── Google Calendar ──────────────────────────────────────────────────────────
+@st.cache_resource
+def get_calendar_service():
+    """Build Google Calendar service from service account stored in secrets."""
+    if not _GCAL_AVAILABLE:
+        return None
+    try:
+        # Support both [gcp_service_account] table and GCP_SERVICE_ACCOUNT_JSON string
+        if "gcp_service_account" in st.secrets:
+            creds_info = dict(st.secrets["gcp_service_account"])
+            pk = creds_info.get("private_key", "")
+            # Fix escaped newlines that TOML multiline may mangle
+            if "\\n" in pk:
+                creds_info["private_key"] = pk.replace("\\n", "\n")
+        elif "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
+            import json
+            creds_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+        else:
+            return None
+        creds = service_account.Credentials.from_service_account_info(
+            creds_info,
+            scopes=["https://www.googleapis.com/auth/calendar"],
+        )
+        return build("calendar", "v3", credentials=creds, cache_discovery=False)
+    except Exception as e:
+        st.warning(f"⚠️ Google Calendar לא זמין: {e}")
+        return None
+
+
+def create_calendar_event(
+    slot_date: date,
+    start_time: str,
+    user_name: str,
+    user_email: str,
+) -> bool:
+    """Create a 1-hour Google Calendar event. Returns True on success."""
+    service = get_calendar_service()
+    if service is None:
+        return False
+    try:
+        t = start_time[:5]
+        start_dt = datetime.strptime(f"{slot_date.isoformat()} {t}", "%Y-%m-%d %H:%M")
+        end_dt   = start_dt + timedelta(hours=1)
+        tz_name  = "Asia/Jerusalem"
+        event = {
+            "summary": f"Dry Run: {user_name}",
+            "description": "Scheduled via Dry Run Scheduler App",
+            "start": {"dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz_name},
+            "end":   {"dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),   "timeZone": tz_name},
+            "attendees": [{"email": user_email}],
+            "sendUpdates": "all",
+        }
+        calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
+        service.events().insert(calendarId=calendar_id, body=event, sendNotifications=True).execute()
+        return True
+    except Exception as e:
+        st.warning(f"⚠️ ההזמנה נשמרה, אך שליחת הזמנת לוח השנה נכשלה: {e}")
+        return False
+
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
 def inject_css():
@@ -335,6 +402,14 @@ def user_view():
                     c1, c2 = st.columns(2)
                     if c1.button("✅ אישור", type="primary", use_container_width=True):
                         book_slot(ps["id"], user["email"], user["name"])
+                        gcal_ok = create_calendar_event(
+                            date.fromisoformat(ps["date"]),
+                            ps["time"],
+                            user["name"],
+                            user["email"],
+                        )
+                        if gcal_ok:
+                            st.toast("📅 הזמנת לוח השנה נשלחה לאימייל שלך!")
                         st.session_state.pending_slot = None
                         st.balloons()
                         st.rerun()
