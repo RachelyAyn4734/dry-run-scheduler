@@ -6,6 +6,8 @@ import pytz
 import pandas as pd
 import re
 
+import traceback
+
 try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
@@ -60,28 +62,46 @@ def to_heb_short(d: date) -> str:
 @st.cache_resource
 def get_calendar_service():
     """Build Google Calendar service from service account stored in secrets."""
+    print("[GCAL] get_calendar_service() called")
     if not _GCAL_AVAILABLE:
+        print("[GCAL] google libraries not available (_GCAL_AVAILABLE=False)")
         return None
     try:
         # Support both [gcp_service_account] table and GCP_SERVICE_ACCOUNT_JSON string
         if "gcp_service_account" in st.secrets:
+            print("[GCAL] Loading credentials from [gcp_service_account] table")
             creds_info = dict(st.secrets["gcp_service_account"])
             pk = creds_info.get("private_key", "")
+            print(f"[GCAL] private_key length: {len(pk)} chars, starts with: {pk[:30]!r}")
             # Fix escaped newlines that TOML multiline may mangle
             if "\\n" in pk:
                 creds_info["private_key"] = pk.replace("\\n", "\n")
+                print("[GCAL] Fixed escaped \\n in private_key")
         elif "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
             import json
-            creds_info = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
+            print("[GCAL] Loading credentials from GCP_SERVICE_ACCOUNT_JSON string")
+            raw = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
+            print(f"[GCAL] JSON string length: {len(raw)} chars")
+            creds_info = json.loads(raw)
+            pk = creds_info.get("private_key", "")
+            print(f"[GCAL] private_key length after parse: {len(pk)} chars")
         else:
+            print("[GCAL] No GCP credentials found in secrets!")
             return None
+        print(f"[GCAL] service_account_email: {creds_info.get('client_email', 'N/A')}")
         creds = service_account.Credentials.from_service_account_info(
             creds_info,
             scopes=["https://www.googleapis.com/auth/calendar"],
         )
-        return build("calendar", "v3", credentials=creds, cache_discovery=False)
+        print("[GCAL] Credentials built successfully")
+        svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
+        print("[GCAL] Calendar service built successfully")
+        return svc
     except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[GCAL] EXCEPTION in get_calendar_service:\n{tb}")
         st.warning(f"⚠️ Google Calendar לא זמין: {e}")
+        st.error(f"🔴 פרטי שגיאה (get_calendar_service):\n```\n{tb}\n```")
         return None
 
 
@@ -92,8 +112,11 @@ def create_calendar_event(
     user_email: str,
 ) -> bool:
     """Create a 1-hour Google Calendar event. Returns True on success."""
+    print(f"[GCAL] create_calendar_event() called: date={slot_date}, time={start_time}, user={user_name}, email={user_email}")
     service = get_calendar_service()
     if service is None:
+        print("[GCAL] service is None — aborting event creation")
+        st.error("🔴 Google Calendar service לא אותחל. בדקי את ה-Secrets.")
         return False
     try:
         t = start_time[:5]
@@ -109,10 +132,16 @@ def create_calendar_event(
             "sendUpdates": "all",
         }
         calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
-        service.events().insert(calendarId=calendar_id, body=event, sendNotifications=True).execute()
+        print(f"[GCAL] Inserting event to calendar: {calendar_id}")
+        print(f"[GCAL] Event payload: {event}")
+        result = service.events().insert(calendarId=calendar_id, body=event, sendNotifications=True).execute()
+        print(f"[GCAL] Event created successfully! id={result.get('id')}, link={result.get('htmlLink')}")
         return True
     except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[GCAL] EXCEPTION in create_calendar_event:\n{tb}")
         st.warning(f"⚠️ ההזמנה נשמרה, אך שליחת הזמנת לוח השנה נכשלה: {e}")
+        st.error(f"🔴 פרטי שגיאה (create_calendar_event):\n```\n{tb}\n```")
         return False
 
 
