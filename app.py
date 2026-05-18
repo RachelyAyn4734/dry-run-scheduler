@@ -194,16 +194,22 @@ def send_confirmation_email(user_email: str, user_name: str, date_str: str, time
         msg["To"]      = user_email
         msg["Subject"] = Header(subject, "utf-8")
         msg.attach(MIMEText(body, "plain", "utf-8"))
+        print(f"[MAIL] Connecting to SMTP server {smtp_server}:{smtp_port}...")
         with smtplib.SMTP(smtp_server, smtp_port) as server:
             server.ehlo()
+            print("[MAIL] ehlo sent, starting TLS...")
             server.starttls()
+            server.ehlo()
+            print(f"[MAIL] Logging in as {smtp_user}...")
             server.login(smtp_user, smtp_password)
+            print(f"[MAIL] Sending email from {smtp_user} to {user_email}...")
             server.sendmail(smtp_user, user_email, msg.as_string())
         print(f"[MAIL] Confirmation email sent successfully to {user_email}")
         return True
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[MAIL] EXCEPTION in send_confirmation_email:\n{tb}")
+        st.error(f"🔴 שגיאת מייל: {e}")
         return False
 
 
@@ -426,7 +432,15 @@ def user_view():
 
     my_slot = fetch_user_slot(user["email"])
 
-    if my_slot:
+    # Show post-booking feedback (set before st.rerun() in the confirm button)
+    if st.session_state.pop("show_booking_success", False):
+        st.balloons()
+        if st.session_state.pop("gcal_booked", False):
+            st.toast("📅 האירוע נוסף ליומן Google!")
+        if st.session_state.pop("mail_sent", False):
+            st.toast("✉️ מייל אישור נשלח אליך!")
+        st.success("✅ הפגישה נקבעה בהצלחה!")
+
         gd = date.fromisoformat(my_slot["date"])
         slot_range = slot_range_label(my_slot["time_slot"])
         st.markdown(f"""
@@ -512,13 +526,11 @@ def user_view():
                         except Exception as _mail_exc:
                             print(f"[MAIL] Unexpected error calling send_confirmation_email: {_mail_exc}")
                             mail_ok = False
-                        if gcal_event_id:
-                            st.toast("📅 האירוע נוסף ליומן Google!")
-                        if mail_ok:
-                            st.toast("✉️ מייל אישור נשלח אליך!")
+                        st.session_state.show_booking_success = True
+                        st.session_state.gcal_booked = bool(gcal_event_id)
+                        st.session_state.mail_sent = mail_ok
                         st.session_state.pending_slot = None
-                        st.balloons()
-                        st.success("✅ הפגישה נקבעה בהצלחה!")
+                        st.rerun()
                     if c2.button("❌ ביטול", use_container_width=True):
                         st.session_state.pending_slot = None
                         st.rerun()
