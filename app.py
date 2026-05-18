@@ -1,19 +1,22 @@
+"""
+Dry Run Scheduling App — thin UI layer.
+All business logic lives in services/, repositories/, utils/.
+"""
+import logging
+import sys
+import os
+
 import streamlit as st
 from supabase import create_client, Client
-from pyluach import dates, hebrewcal, gematria
 from datetime import date, datetime, timedelta
 import pytz
 import pandas as pd
-import re
 
-import traceback
+# ── Path setup ────────────────────────────────────────────────────────────────
+sys.path.insert(0, os.path.dirname(__file__))
 
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    _GCAL_AVAILABLE = True
-except ImportError:
-    _GCAL_AVAILABLE = False
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
 # ── Page config ───────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -36,181 +39,24 @@ def get_supabase() -> Client:
 
 supabase = get_supabase()
 
-# ── Hebrew date helpers ───────────────────────────────────────────────────────
-_HEB_MONTHS = {
-    1: "ניסן", 2: "אייר", 3: "סיון", 4: "תמוז", 5: "אב", 6: "אלול",
-    7: "תשרי", 8: "חשון", 9: "כסלו", 10: "טבת", 11: "שבט", 12: "אדר",
-    13: "אדר ב׳",
-}
+# ── Local layer imports ───────────────────────────────────────────────────────
+from utils.dates import to_heb, to_heb_short, slot_range_label
+from utils.validation import valid_email, normalize_email, safe
+from repositories.slots_repository import (
+    fetch_slots, fetch_booked_slots, fetch_user_slot,
+    add_slot, delete_slot_record,
+)
+from repositories.users_repository import (
+    get_user, create_user, get_all_users, delete_user_record,
+)
+from services import booking_service
 
-def to_heb(d: date) -> str:
-    """Full Hebrew date string."""
-    hd = dates.HebrewDate.from_pydate(d)
-    day_s = gematria._num_to_str(hd.day)
-    mon_s = _HEB_MONTHS.get(hd.month, str(hd.month))
-    yr_s  = "ה׳" + gematria._num_to_str(hd.year % 1000)
-    return f"{day_s} ב{mon_s} {yr_s}"
+# ── Helpers ───────────────────────────────────────────────────────────────────
+def _get_mode() -> str:
+    return st.query_params.get("mode", "user")
 
-def to_heb_short(d: date) -> str:
-    """Short Hebrew date string."""
-    hd = dates.HebrewDate.from_pydate(d)
-    return (f"{gematria._num_to_str(hd.day)} "
-            f"{_HEB_MONTHS.get(hd.month, '')} "
-            f"{gematria._num_to_str(hd.year % 1000)}")
-
-# ── Google Calendar ──────────────────────────────────────────────────────────
-@st.cache_resource
-def get_calendar_service():
-    """Build Google Calendar service from service account stored in secrets."""
-    print("[GCAL] get_calendar_service() called")
-    if not _GCAL_AVAILABLE:
-        print("[GCAL] google libraries not available (_GCAL_AVAILABLE=False)")
-        return None
-    try:
-        # Support both [gcp_service_account] table and GCP_SERVICE_ACCOUNT_JSON string
-        if "gcp_service_account" in st.secrets:
-            print("[GCAL] Loading credentials from [gcp_service_account] table")
-            creds_info = dict(st.secrets["gcp_service_account"])
-            pk = creds_info.get("private_key", "")
-            print(f"[GCAL] private_key length: {len(pk)} chars, starts with: {pk[:30]!r}")
-            # Fix escaped newlines that TOML multiline may mangle
-            if "\\n" in pk:
-                creds_info["private_key"] = pk.replace("\\n", "\n")
-                print("[GCAL] Fixed escaped \\n in private_key")
-        elif "GCP_SERVICE_ACCOUNT_JSON" in st.secrets:
-            import json
-            print("[GCAL] Loading credentials from GCP_SERVICE_ACCOUNT_JSON string")
-            raw = st.secrets["GCP_SERVICE_ACCOUNT_JSON"]
-            print(f"[GCAL] JSON string length: {len(raw)} chars")
-            creds_info = json.loads(raw)
-            pk = creds_info.get("private_key", "")
-            print(f"[GCAL] private_key length after parse: {len(pk)} chars")
-        else:
-            print("[GCAL] No GCP credentials found in secrets!")
-            return None
-        print(f"[GCAL] service_account_email: {creds_info.get('client_email', 'N/A')}")
-        creds = service_account.Credentials.from_service_account_info(
-            creds_info,
-            scopes=["https://www.googleapis.com/auth/calendar"],
-        )
-        print("[GCAL] Credentials built successfully")
-        svc = build("calendar", "v3", credentials=creds, cache_discovery=False)
-        print("[GCAL] Calendar service built successfully")
-        return svc
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[GCAL] EXCEPTION in get_calendar_service:\n{tb}")
-        st.warning(f"⚠️ Google Calendar לא זמין: {e}")
-        st.error(f"🔴 פרטי שגיאה (get_calendar_service):\n```\n{tb}\n```")
-        return None
-
-
-def create_calendar_event(
-    slot_date: date,
-    start_time: str,
-    user_name: str,
-    user_email: str,
-) -> str:
-    """Create a 1-hour Google Calendar event. Returns event_id on success, empty string on failure."""
-    print(f"[GCAL] create_calendar_event() called: date={slot_date}, time={start_time}, user={user_name}, email={user_email}")
-    service = get_calendar_service()
-    if service is None:
-        print("[GCAL] service is None — aborting event creation")
-        st.error("🔴 Google Calendar service לא אותחל. בדקי את ה-Secrets.")
-        return ""
-    try:
-        t = start_time[:5]
-        start_dt = datetime.strptime(f"{slot_date.isoformat()} {t}", "%Y-%m-%d %H:%M")
-        end_dt   = start_dt + timedelta(hours=1)
-        tz_name  = "Asia/Jerusalem"
-        event = {
-            "summary": f"Dry Run: {user_name}",
-            "description": f"Scheduled via Dry Run Scheduler App\nשם: {user_name}\nאימייל: {user_email}",
-            "start": {"dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz_name},
-            "end":   {"dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),   "timeZone": tz_name},
-        }
-        calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
-        print(f"[GCAL] Inserting event to calendar: {calendar_id}")
-        print(f"[GCAL] Event payload: {event}")
-        result = service.events().insert(calendarId=calendar_id, body=event).execute()
-        event_id = result.get("id", "")
-        print(f"[GCAL] Event created successfully! id={event_id}, link={result.get('htmlLink')}")
-        return event_id
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[GCAL] EXCEPTION in create_calendar_event:\n{tb}")
-        st.warning(f"⚠️ ההזמנה נשמרה, אך שליחת הזמנת לוח השנה נכשלה: {e}")
-        st.error(f"🔴 פרטי שגיאה (create_calendar_event):\n```\n{tb}\n```")
-        return ""
-
-
-def delete_calendar_event(event_id: str) -> bool:
-    """Delete a Google Calendar event by its event_id. Returns True on success."""
-    if not event_id:
-        print("[GCAL] delete_calendar_event: no event_id provided, skipping")
-        return False
-    print(f"[GCAL] delete_calendar_event() called: event_id={event_id}")
-    service = get_calendar_service()
-    if service is None:
-        print("[GCAL] service is None — aborting event deletion")
-        return False
-    try:
-        calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
-        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
-        print(f"[GCAL] Event {event_id} deleted successfully")
-        return True
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[GCAL] EXCEPTION in delete_calendar_event:\n{tb}")
-        return False
-
-
-def send_confirmation_email(user_email: str, user_name: str, date_str: str, time_str: str) -> bool:
-    """Send a Hebrew booking confirmation email via SMTP. Returns True on success."""
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.mime.multipart import MIMEMultipart
-    from email.header import Header
-    print(f"[MAIL] send_confirmation_email() called: to={user_email}, name={user_name}, date={date_str}, time={time_str}")
-    try:
-        smtp_server   = st.secrets.get("SMTP_SERVER", "")
-        smtp_port     = int(st.secrets.get("SMTP_PORT", 587))
-        smtp_user     = st.secrets.get("SMTP_USER", "")
-        smtp_password = st.secrets.get("SMTP_PASSWORD", "")
-        if not smtp_server or not smtp_user or not smtp_password:
-            print("[MAIL] SMTP secrets missing — skipping email")
-            return False
-        subject = f"אישור פגישה: {user_name}"
-        body = (
-            f"שלום {user_name},\n\n"
-            f"פגישת ה-Dry Run שלך אושרה!\n\n"
-            f"📅 תאריך: {date_str}\n"
-            f"🕐 שעה: {time_str}\n\n"
-            f"נשמח לראותך!\n"
-            f"צוות Dry Run"
-        )
-        msg = MIMEMultipart()
-        msg["From"]    = smtp_user
-        msg["To"]      = user_email
-        msg["Subject"] = Header(subject, "utf-8")
-        msg.attach(MIMEText(body, "plain", "utf-8"))
-        print(f"[MAIL] Connecting to SMTP server {smtp_server}:{smtp_port}...")
-        with smtplib.SMTP(smtp_server, smtp_port) as server:
-            server.ehlo()
-            print("[MAIL] ehlo sent, starting TLS...")
-            server.starttls()
-            server.ehlo()
-            print(f"[MAIL] Logging in as {smtp_user}...")
-            server.login(smtp_user, smtp_password)
-            print(f"[MAIL] Sending email from {smtp_user} to {user_email}...")
-            server.sendmail(smtp_user, user_email, msg.as_string())
-        print(f"[MAIL] Confirmation email sent successfully to {user_email}")
-        return True
-    except Exception as e:
-        tb = traceback.format_exc()
-        print(f"[MAIL] EXCEPTION in send_confirmation_email:\n{tb}")
-        st.error(f"🔴 שגיאת מייל: {e}")
-        return False
+def _do_cancel(slot_id: int, gcal_event_id: str = "") -> None:
+    booking_service.cancel(supabase, st.secrets, slot_id, gcal_event_id or "")
 
 
 # ── CSS ───────────────────────────────────────────────────────────────────────
@@ -218,48 +64,35 @@ def inject_css():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-
     html, body, [class*="css"], .stMarkdown, p, div, span, label {
-        font-family: 'Inter', 'Segoe UI', sans-serif !important;
-        font-size: 17px;
+        font-family: 'Inter', 'Segoe UI', sans-serif !important; font-size: 17px;
     }
     h1 { font-size: 30px !important; font-weight: 800 !important; }
     h2 { font-size: 24px !important; font-weight: 700 !important; }
     h3 { font-size: 21px !important; font-weight: 700 !important; }
     .stApp { background: #f0f2f6; }
-
-    /* Hero */
     .hero {
         background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 60%, #a21caf 100%);
         color: white; border-radius: 22px; padding: 30px 34px; margin-bottom: 26px;
         box-shadow: 0 10px 40px rgba(79,70,229,0.35);
     }
-    .hero h1 { font-size:30px!important; font-weight:800!important;
-               margin:0 0 6px; color:white!important; }
+    .hero h1 { font-size:30px!important; font-weight:800!important; margin:0 0 6px; color:white!important; }
     .hero p   { font-size:17px!important; margin:0; opacity:.88; color:white!important; }
-
-    /* Date card */
     .date-card {
         background: white; border-radius: 18px; padding: 22px 26px 10px;
         margin-bottom: 18px; box-shadow: 0 3px 14px rgba(0,0,0,0.08);
         border: 1.5px solid #e5e7eb;
     }
     .date-card .gc { font-size:20px; font-weight:700; color:#111827; }
-    .date-card .hc { font-size:18px; color:#6b21a8; font-weight:600;
-                     direction:rtl; text-align:right; margin-top:2px; }
-
-    /* My slot */
+    .date-card .hc { font-size:18px; color:#6b21a8; font-weight:600; direction:rtl; text-align:right; margin-top:2px; }
     .my-slot {
         background: linear-gradient(135deg,#059669,#10b981); color:white;
         border-radius:20px; padding:22px 28px; margin-bottom:22px;
         box-shadow:0 6px 24px rgba(5,150,105,0.30);
     }
-    .my-slot h2 { font-size:22px!important; font-weight:800!important;
-                  margin:0 0 8px; color:white!important; }
+    .my-slot h2 { font-size:22px!important; font-weight:800!important; margin:0 0 8px; color:white!important; }
     .my-slot .row { font-size:17px; margin:4px 0; color:white; }
     .my-slot .heb { font-size:18px; direction:rtl; color:#d1fae5; }
-
-    /* Buttons */
     .stButton > button {
         border-radius:16px!important; font-weight:700!important; font-size:17px!important;
         min-height:3.4rem!important; width:100%!important;
@@ -278,27 +111,17 @@ def inject_css():
     [data-testid="baseButton-primary"]:hover {
         transform:translateY(-1px)!important; box-shadow:0 8px 24px rgba(79,70,229,0.50)!important;
     }
-
-    /* Badges */
-    .badge { display:inline-block; border-radius:20px; padding:5px 16px;
-             font-size:14px; font-weight:700; }
+    .badge { display:inline-block; border-radius:20px; padding:5px 16px; font-size:14px; font-weight:700; }
     .b-avail  { background:#ede9fe; color:#4f46e5; }
     .b-booked { background:#d1fae5; color:#065f46; }
     .b-none   { background:#f3f4f6; color:#6b7280; }
-
-    /* Section title */
-    .sec-title { font-size:20px!important; font-weight:800!important;
-                 color:#111827!important; margin:0 0 14px!important; }
-
-    /* Avatar */
+    .sec-title { font-size:20px!important; font-weight:800!important; color:#111827!important; margin:0 0 14px!important; }
     .avatar {
         width:42px; height:42px; border-radius:50%;
         background:linear-gradient(135deg,#4f46e5,#7c3aed);
         color:white; font-size:17px; font-weight:800;
         display:inline-flex; align-items:center; justify-content:center;
     }
-
-    /* Booked overview card */
     .bov-card {
         background:white; border-radius:16px; padding:16px 20px; margin-bottom:10px;
         border-left:5px solid #7c3aed; box-shadow:0 2px 8px rgba(0,0,0,0.06);
@@ -306,103 +129,17 @@ def inject_css():
     .bov-card .slot-info { font-size:18px; font-weight:700; color:#111827; }
     .bov-card .user-info { font-size:15px; color:#6b7280; margin-top:4px; }
     .bov-card .heb-info  { font-size:16px; color:#6b21a8; direction:rtl; margin-top:2px; }
-
-    /* Tabs */
-    .stTabs [data-baseweb="tab"] { font-size:16px!important; font-weight:700!important;
-                                    padding:12px 22px!important; }
-
-    /* Footer */
+    .stTabs [data-baseweb="tab"] { font-size:16px!important; font-weight:700!important; padding:12px 22px!important; }
     .footer { text-align:center; color:#9ca3af; font-size:14px; margin-top:36px; }
     #MainMenu, footer, header { visibility:hidden; }
     </style>
     """, unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════
-# DB — USERS
-# ═══════════════════════════════════════════════════════════════
-def get_user(email: str):
-    r = supabase.table("users").select("*").eq("email", email.lower().strip()).execute()
-    return r.data[0] if r.data else None
-
-def create_user(name: str, email: str, phone: str):
-    supabase.table("users").insert({
-        "name": name.strip(), "email": email.lower().strip(), "phone": phone.strip(),
-    }).execute()
-
-def get_all_users():
-    return supabase.table("users").select("*").order("name").execute().data or []
-
-def delete_user(email: str):
-    r = supabase.table("slots").select("id").eq("user_email", email).eq("is_booked", True).execute()
-    for s in (r.data or []):
-        cancel_slot(s["id"])
-    supabase.table("users").delete().eq("email", email).execute()
-
-# ═══════════════════════════════════════════════════════════════
-# DB — SLOTS
-# ═══════════════════════════════════════════════════════════════
-def fetch_slots(filter_date=None, only_available: bool = False):
-    q = supabase.table("slots").select("*")
-    if filter_date:
-        q = q.eq("date", filter_date.isoformat())
-    elif only_available:
-        tomorrow = (now_il().date() + timedelta(days=1)).isoformat()
-        q = q.gte("date", tomorrow)
-    if only_available:
-        q = q.eq("is_booked", False)
-    return q.order("date").order("time_slot").execute().data or []
-
-def fetch_booked_slots():
-    return (supabase.table("slots").select("*")
-            .eq("is_booked", True).order("date").order("time_slot").execute().data or [])
-
-def fetch_user_slot(user_email: str):
-    r = (supabase.table("slots").select("*")
-         .eq("is_booked", True).eq("user_email", user_email).execute())
-    return r.data[0] if r.data else None
-
-def add_slot(slot_date: date, time_slot: str) -> bool:
-    ex = supabase.table("slots").select("id").eq("date", slot_date.isoformat()).eq("time_slot", time_slot).execute()
-    if ex.data:
-        return False
-    supabase.table("slots").insert({
-        "date": slot_date.isoformat(), "time_slot": time_slot, "is_booked": False,
-    }).execute()
-    return True
-
-def book_slot(slot_id: int, user_email: str, user_name: str, gcal_event_id: str = ""):
-    payload = {"is_booked": True, "user_email": user_email, "booked_by": user_name}
-    if gcal_event_id:
-        payload["gcal_event_id"] = gcal_event_id
-    supabase.table("slots").update(payload).eq("id", slot_id).execute()
-
-def cancel_slot(slot_id: int):
-    supabase.table("slots").update({
-        "is_booked": False, "user_email": None, "booked_by": None,
-    }).eq("id", slot_id).execute()
-
-def delete_slot(slot_id: int):
-    supabase.table("slots").delete().eq("id", slot_id).execute()
-
-# ═══════════════════════════════════════════════════════════════
-# HELPERS
-# ═══════════════════════════════════════════════════════════════
-def valid_email(email: str) -> bool:
-    return bool(re.match(r"[^@]+@[^@]+\.[^@]+", email))
-
-def get_mode() -> str:
-    return st.query_params.get("mode", "user")
 
 # ═══════════════════════════════════════════════════════════════
 # USER VIEW
 # ═══════════════════════════════════════════════════════════════
 def user_view():
-    def slot_range_label(start_time: str) -> str:
-        t = start_time[:5]  # handle both HH:MM and HH:MM:SS from DB
-        start_dt = datetime.strptime(t, "%H:%M")
-        end_dt = start_dt + timedelta(hours=1)
-        return f"{t} - {end_dt.strftime('%H:%M')}"
-
     st.markdown("""
     <div class="hero">
         <h1>📅 תיאום Dry Run</h1>
@@ -410,6 +147,7 @@ def user_view():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Login ──────────────────────────────────────────────────
     if not st.session_state.get("user_profile"):
         with st.container(border=True):
             st.markdown('<p class="sec-title">🔑 הכניסי את האימייל שלך</p>', unsafe_allow_html=True)
@@ -419,7 +157,7 @@ def user_view():
                 if not valid_email(email_input):
                     st.error("נא להכניס כתובת אימייל תקינה.")
                 else:
-                    user = get_user(email_input)
+                    user = get_user(supabase, normalize_email(email_input))
                     if not user:
                         st.error("❌ האימייל הזה אינו רשום. פני למנהל/ת.")
                     else:
@@ -428,11 +166,9 @@ def user_view():
         return
 
     user = st.session_state.user_profile
-    st.markdown(f"👋 **שלום, {user['name']}!**")
+    st.markdown(f"👋 **שלום, {safe(user['name'])}!**")
 
-    my_slot = fetch_user_slot(user["email"])
-
-    # Show post-booking feedback (set before st.rerun() in the confirm button)
+    # ── Post-booking success banner ────────────────────────────
     if st.session_state.pop("show_booking_success", False):
         st.balloons()
         if st.session_state.pop("gcal_booked", False):
@@ -440,115 +176,113 @@ def user_view():
         if st.session_state.pop("mail_sent", False):
             st.toast("✉️ מייל אישור נשלח אליך!")
         st.success("✅ הפגישה נקבעה בהצלחה!")
+        st.divider()
 
+    my_slot = fetch_user_slot(supabase, user["email"])
+
+    # ── Existing booking ───────────────────────────────────────
+    if my_slot:
         gd = date.fromisoformat(my_slot["date"])
-        slot_range = slot_range_label(my_slot["time_slot"])
+        sr = slot_range_label(my_slot["time_slot"])
         st.markdown(f"""
         <div class="my-slot">
             <h2>✅ הפגישה שלך</h2>
-            <div class="row">📅 {gd.strftime('%A, %d %B %Y')}</div>
-            <div class="heb">{to_heb(gd)}</div>
-            <div class="row">🕐 {slot_range}</div>
+            <div class="row">📅 {safe(gd.strftime('%A, %d %B %Y'))}</div>
+            <div class="heb">{safe(to_heb(gd))}</div>
+            <div class="row">🕐 {safe(sr)}</div>
         </div>
         """, unsafe_allow_html=True)
-
         with st.container(border=True):
             st.markdown("רוצה לשנות? ניתן לבטל ולבחור מועד אחר.")
             if st.button("🗑️ ביטול הפגישה", use_container_width=True):
                 st.session_state.confirm_cancel = True
-
         if st.session_state.get("confirm_cancel"):
             with st.container(border=True):
-                st.warning(f"לבטל את **{gd.strftime('%d/%m/%Y')} @ {slot_range}**?")
+                st.warning(f"לבטל את **{safe(gd.strftime('%d/%m/%Y'))} @ {safe(sr)}**?")
                 c1, c2 = st.columns(2)
                 if c1.button("כן, בטלי", type="primary", use_container_width=True):
-                    gcal_id = my_slot.get("gcal_event_id", "")
-                    if gcal_id:
-                        delete_calendar_event(gcal_id)
-                    cancel_slot(my_slot["id"])
+                    _do_cancel(my_slot["id"], my_slot.get("gcal_event_id") or "")
                     st.session_state.confirm_cancel = False
                     st.rerun()
                 if c2.button("השאירי", use_container_width=True):
                     st.session_state.confirm_cancel = False
                     st.rerun()
-    else:
-        slots = fetch_slots(only_available=True)
-        if not slots:
-            st.info("🕐 אין מועדים פנויים כרגע.")
-        else:
-            st.markdown('<p class="sec-title">🗓️ מועדים פנויים</p>', unsafe_allow_html=True)
-            df = pd.DataFrame(slots)
-            for slot_date_str, group in df.groupby("date"):
-                gd = date.fromisoformat(slot_date_str)
-                st.markdown(f"""
-                <div class="date-card">
-                    <div class="gc">📅 {gd.strftime('%A, %d %B %Y')}</div>
-                    <div class="hc">{to_heb(gd)}</div>
-                </div>
-                """, unsafe_allow_html=True)
-                rows = list(group.iterrows())
-                cols = st.columns(min(len(rows), 4))
-                for idx, (_, row) in enumerate(rows):
-                    slot_range = slot_range_label(row["time_slot"])
-                    if cols[idx % 4].button(f"🕐 {slot_range}", key=f"s_{row['id']}"):
-                        st.session_state.pending_slot = {
-                            "id": row["id"], "date": slot_date_str,
-                            "time": row["time_slot"], "time_range": slot_range, "heb": to_heb(gd),
-                        }
 
-            if st.session_state.get("pending_slot"):
-                ps = st.session_state.pending_slot
-                gd_p = date.fromisoformat(ps["date"])
-                with st.container(border=True):
-                    st.subheader("✅ אישור הזמנה")
-                    st.markdown(f"""
-                    - 📅 **{gd_p.strftime('%A, %d %B %Y')}**
-                    - <span dir="rtl">{ps['heb']}</span>
-                    - 🕐 **{ps['time_range']}**
-                    - ⏳ **שעת התחלה:** {ps['time']} | **שעת סיום:** {ps['time_range'].split(' - ')[1]}
-                    - 👤 **{user['name']}**
-                    """, unsafe_allow_html=True)
-                    c1, c2 = st.columns(2)
-                    if c1.button("✅ אישור", type="primary", use_container_width=True):
-                        gcal_event_id = create_calendar_event(
-                            date.fromisoformat(ps["date"]),
-                            ps["time"],
-                            user["name"],
-                            user["email"],
-                        )
-                        book_slot(ps["id"], user["email"], user["name"], gcal_event_id)
-                        print(f"[BOOK] Slot booked: id={ps['id']}, user={user['name']}, gcal_event_id={gcal_event_id!r}")
-                        try:
-                            mail_ok = send_confirmation_email(
-                                user["email"], user["name"],
-                                ps["date"], ps["time_range"],
-                            )
-                        except Exception as _mail_exc:
-                            print(f"[MAIL] Unexpected error calling send_confirmation_email: {_mail_exc}")
-                            mail_ok = False
+    # ── Slot selection / confirmation ──────────────────────────
+    else:
+        # Confirmation panel shown FIRST (hides slot list)
+        if st.session_state.get("pending_slot"):
+            ps = st.session_state.pending_slot
+            gd_p = date.fromisoformat(ps["date"])
+            with st.container(border=True):
+                st.subheader("✅ אישור הזמנה")
+                st.markdown(f"""
+                - 📅 **{safe(gd_p.strftime('%A, %d %B %Y'))}**
+                - <span dir="rtl">{safe(ps['heb'])}</span>
+                - 🕐 **{safe(ps['time_range'])}**
+                - ⏳ **שעת התחלה:** {safe(ps['time'][:5])} | **שעת סיום:** {safe(ps['time_range'].split(' - ')[1])}
+                - 👤 **{safe(user['name'])}**
+                """, unsafe_allow_html=True)
+                c1, c2 = st.columns(2)
+                if c1.button("✅ אישור", type="primary", use_container_width=True):
+                    result = booking_service.book(
+                        supabase, st.secrets,
+                        slot_id=ps["id"],
+                        user_email=user["email"],
+                        user_name=user["name"],
+                        slot_date=date.fromisoformat(ps["date"]),
+                        start_time=ps["time"],
+                    )
+                    if not result["success"]:
+                        st.warning("⚠️ מצטערים, המועד הזה כבר נתפס. אנא בחרי מועד אחר.")
+                        st.session_state.pending_slot = None
+                        st.rerun()
+                    else:
                         st.session_state.show_booking_success = True
-                        st.session_state.gcal_booked = bool(gcal_event_id)
-                        st.session_state.mail_sent = mail_ok
+                        st.session_state.gcal_booked = result["gcal_ok"]
+                        st.session_state.mail_sent   = result["mail_ok"]
                         st.session_state.pending_slot = None
                         st.rerun()
-                    if c2.button("❌ ביטול", use_container_width=True):
-                        st.session_state.pending_slot = None
-                        st.rerun()
+                if c2.button("❌ חזור לבחירת שעה", use_container_width=True):
+                    st.session_state.pending_slot = None
+                    st.rerun()
+
+        # Available slots (hidden while confirmation is open)
+        else:
+            slots = fetch_slots(supabase, only_available=True)
+            if not slots:
+                st.info("🕐 אין מועדים פנויים כרגע.")
+            else:
+                st.markdown('<p class="sec-title">🗓️ מועדים פנויים</p>', unsafe_allow_html=True)
+                df = pd.DataFrame(slots)
+                for slot_date_str, group in df.groupby("date"):
+                    gd = date.fromisoformat(slot_date_str)
+                    st.markdown(f"""
+                    <div class="date-card">
+                        <div class="gc">📅 {safe(gd.strftime('%A, %d %B %Y'))}</div>
+                        <div class="hc">{safe(to_heb(gd))}</div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    rows = list(group.iterrows())
+                    cols = st.columns(min(len(rows), 4))
+                    for idx, (_, row) in enumerate(rows):
+                        sr = slot_range_label(row["time_slot"])
+                        if cols[idx % 4].button(f"🕐 {sr}", key=f"s_{row['id']}"):
+                            st.session_state.pending_slot = {
+                                "id": row["id"], "date": slot_date_str,
+                                "time": row["time_slot"], "time_range": sr, "heb": to_heb(gd),
+                            }
+                            st.rerun()
 
     if st.button("🚪 יציאה", use_container_width=True):
         st.session_state.user_profile = None
         st.rerun()
 
+
 # ═══════════════════════════════════════════════════════════════
 # ADMIN VIEW
 # ═══════════════════════════════════════════════════════════════
 def admin_view():
-    def slot_range_label(start_time: str) -> str:
-        t = start_time[:5]  # handle both HH:MM and HH:MM:SS from DB
-        start_dt = datetime.strptime(t, "%H:%M")
-        end_dt = start_dt + timedelta(hours=1)
-        return f"{t} - {end_dt.strftime('%H:%M')}"
-
     st.markdown("""
     <div class="hero">
         <h1>🔧 Admin Dashboard</h1>
@@ -556,13 +290,18 @@ def admin_view():
     </div>
     """, unsafe_allow_html=True)
 
+    # ── Auth (no hardcoded fallback) ───────────────────────────
     if not st.session_state.get("admin_auth"):
+        admin_pwd = st.secrets.get("ADMIN_PASSWORD", "")
+        if not admin_pwd:
+            st.error("🔴 ADMIN_PASSWORD לא מוגדר ב-Secrets. לא ניתן להתחבר.")
+            return
         with st.container(border=True):
             st.markdown('<p class="sec-title">🔐 כניסת מנהל</p>', unsafe_allow_html=True)
             pwd = st.text_input("סיסמה", type="password", label_visibility="collapsed",
                                 placeholder="הכנס סיסמה")
             if st.button("כניסה", type="primary", use_container_width=True):
-                if pwd == st.secrets.get("ADMIN_PASSWORD", "dryrun2026"):
+                if pwd == admin_pwd:
                     st.session_state.admin_auth = True
                     st.rerun()
                 else:
@@ -571,45 +310,34 @@ def admin_view():
 
     tab1, tab2, tab3 = st.tabs(["📅 מועדים", "👁️ סקירת הזמנות", "👥 משתמשים"])
 
-    # TAB 1 — SLOTS
+    # ── TAB 1: Slots ───────────────────────────────────────────
     with tab1:
         with st.container(border=True):
             st.markdown('<p class="sec-title">➕ הוספת מועד</p>', unsafe_allow_html=True)
             c1, c2 = st.columns(2)
-            today_il = now_il().date()
+            today_il    = now_il().date()
             tomorrow_il = today_il + timedelta(days=1)
             sel_date = c1.date_input("תאריך", value=tomorrow_il, min_value=tomorrow_il,
                                      format="DD/MM/YYYY")
-            # Only full hours; exclude times already saved for this date
             all_hour_opts = [f"{h:02d}:00" for h in range(7, 22)]
-            if sel_date:
-                taken = {
-                    s["time_slot"][:5]
-                    for s in fetch_slots(filter_date=sel_date)
-                }
-                available_opts = [t for t in all_hour_opts if t not in taken]
-            else:
-                available_opts = all_hour_opts
+            taken = {s["time_slot"][:5] for s in fetch_slots(supabase, filter_date=sel_date)} if sel_date else set()
+            available_opts = [t for t in all_hour_opts if t not in taken]
+            time_slot = None
             if not available_opts:
                 c2.warning("כל השעות לתאריך זה כבר תפוסות.")
-                time_slot = None
             else:
-                time_slot = c2.selectbox(
-                    "שעה (משך כל פגישה: שעה)",
-                    available_opts,
-                    format_func=slot_range_label,
-                )
-            if sel_date:
+                time_slot = c2.selectbox("שעה (משך: שעה)", available_opts,
+                                         format_func=slot_range_label)
+            if sel_date and time_slot:
                 st.markdown(
                     f'<p style="color:#6b21a8;font-size:17px;direction:rtl;">'
-                    f'📜 {to_heb(sel_date)}</p>',
-                    unsafe_allow_html=True,
-                )
+                    f'📜 {safe(to_heb(sel_date))}</p>',
+                    unsafe_allow_html=True)
                 st.caption(f"משך המועד: {slot_range_label(time_slot)}")
             if st.button("💾 שמור מועד", type="primary", use_container_width=True):
                 if not time_slot:
                     st.warning("אין שעות פנויות לתאריך זה.")
-                elif add_slot(sel_date, time_slot):
+                elif add_slot(supabase, sel_date, time_slot):
                     st.success("✅ מועד נוסף!")
                     st.rerun()
                 else:
@@ -619,7 +347,7 @@ def admin_view():
             st.markdown('<p class="sec-title">📋 כל המועדים</p>', unsafe_allow_html=True)
             filter_d = st.date_input("סנן לפי תאריך", value=None,
                                      format="DD/MM/YYYY", key="admin_fd")
-            slots = fetch_slots(filter_date=filter_d)
+            slots = fetch_slots(supabase, filter_date=filter_d)
             if not slots:
                 st.info("אין מועדים.")
             else:
@@ -627,56 +355,53 @@ def admin_view():
                 for slot_date_str, group in df.groupby("date"):
                     gd = date.fromisoformat(slot_date_str)
                     st.markdown(
-                        f"**📅 {gd.strftime('%A, %d/%m/%Y')}**"
+                        f"**📅 {safe(gd.strftime('%A, %d/%m/%Y'))}**"
                         f"<span style='color:#6b21a8;margin-right:10px;'>"
-                        f" — {to_heb_short(gd)}</span>",
-                        unsafe_allow_html=True,
-                    )
+                        f" — {safe(to_heb_short(gd))}</span>",
+                        unsafe_allow_html=True)
                     for _, row in group.iterrows():
                         c1, c2, c3, c4 = st.columns([1.5, 3, 1.5, 0.7])
                         c1.markdown(f"**🕐 {slot_range_label(row['time_slot'])}**")
                         if row["is_booked"]:
                             c2.markdown(
-                                f'<span class="badge b-booked">✅ {row.get("booked_by","?")} '
-                                f'({row.get("user_email","?")})</span>',
+                                f'<span class="badge b-booked">✅ {safe(row.get("booked_by","?"))}'
+                                f' ({safe(row.get("user_email","?"))})</span>',
                                 unsafe_allow_html=True)
                             if c3.button("↩️ בטל הזמנה", key=f"unb_{row['id']}"):
-                                cancel_slot(row["id"])
+                                _do_cancel(row["id"], row.get("gcal_event_id") or "")
                                 st.rerun()
                         else:
                             c2.markdown('<span class="badge b-avail">🟢 פנוי</span>',
                                         unsafe_allow_html=True)
                             c3.empty()
                         if c4.button("🗑️", key=f"del_{row['id']}"):
-                            delete_slot(row["id"])
+                            if row.get("is_booked"):
+                                _do_cancel(row["id"], row.get("gcal_event_id") or "")
+                            delete_slot_record(supabase, row["id"])
                             st.rerun()
                     st.divider()
 
-    # TAB 2 — BOOKED OVERVIEW
+    # ── TAB 2: Booked overview ─────────────────────────────────
     with tab2:
         st.markdown('<p class="sec-title">👁️ סקירת הזמנות</p>', unsafe_allow_html=True)
-        booked = fetch_booked_slots()
+        booked = fetch_booked_slots(supabase)
         if not booked:
             st.info("אין הזמנות פעילות כרגע.")
         else:
-            users_list = get_all_users()
-            user_map = {u["email"]: u for u in users_list}
+            user_map = {u["email"]: u for u in get_all_users(supabase)}
             for s in booked:
                 gd = date.fromisoformat(s["date"])
-                u = user_map.get(s.get("user_email", ""), {})
-                uname  = u.get("name", s.get("booked_by", "—"))
-                uemail = s.get("user_email", "—")
-                uphone = u.get("phone", "—")
+                u  = user_map.get(s.get("user_email", ""), {})
                 st.markdown(f"""
                 <div class="bov-card">
-                    <div class="slot-info">🕐 {s['time_slot']} &nbsp;|&nbsp; 📅 {gd.strftime('%d/%m/%Y')}</div>
-                    <div class="heb-info">{to_heb_short(gd)}</div>
-                    <div class="user-info">👤 {uname} &nbsp;·&nbsp; ✉️ {uemail} &nbsp;·&nbsp; 📞 {uphone}</div>
+                    <div class="slot-info">🕐 {safe(slot_range_label(s['time_slot']))} &nbsp;|&nbsp; 📅 {safe(gd.strftime('%d/%m/%Y'))}</div>
+                    <div class="heb-info">{safe(to_heb_short(gd))}</div>
+                    <div class="user-info">👤 {safe(u.get('name', s.get('booked_by','—')))} &nbsp;·&nbsp; ✉️ {safe(s.get('user_email','—'))} &nbsp;·&nbsp; 📞 {safe(u.get('phone','—'))}</div>
                 </div>
                 """, unsafe_allow_html=True)
             st.markdown(f"**סה״כ: {len(booked)} הזמנות**")
 
-    # TAB 3 — USERS
+    # ── TAB 3: Users ───────────────────────────────────────────
     with tab3:
         with st.container(border=True):
             st.markdown('<p class="sec-title">➕ הוספת משתמש</p>', unsafe_allow_html=True)
@@ -685,41 +410,42 @@ def admin_view():
             new_email = nc2.text_input("אימייל", placeholder="rachel@example.com")
             new_phone = nc3.text_input("טלפון", placeholder="+972-50-...")
             if st.button("➕ הוסף משתמש", type="primary", use_container_width=True):
-                if not new_name or not valid_email(new_email):
+                norm = normalize_email(new_email)
+                if not new_name or not valid_email(norm):
                     st.error("נא למלא שם ואימייל תקין.")
-                elif get_user(new_email):
+                elif get_user(supabase, norm):
                     st.warning("משתמש עם האימייל הזה כבר קיים.")
                 else:
-                    create_user(new_name, new_email, new_phone)
-                    st.success(f"✅ {new_name} נוסף/ה!")
+                    create_user(supabase, new_name, norm, new_phone)
+                    st.success(f"✅ {safe(new_name)} נוסף/ה!")
                     st.rerun()
 
         with st.container(border=True):
             st.markdown('<p class="sec-title">👥 משתמשים רשומים</p>', unsafe_allow_html=True)
-            users = get_all_users()
+            users = get_all_users(supabase)
             if not users:
                 st.info("אין משתמשים רשומים.")
             else:
-                all_slots = fetch_slots()
                 booked_map = {
-                    s["user_email"]: f"{s['date']} @ {s['time_slot']}"
-                    for s in all_slots if s.get("is_booked") and s.get("user_email")
+                    s["user_email"]: f"{s['date']} @ {slot_range_label(s['time_slot'])}"
+                    for s in fetch_slots(supabase) if s.get("is_booked") and s.get("user_email")
                 }
                 for u in users:
                     uc1, uc2, uc3, uc4, uc5 = st.columns([0.55, 2, 2.5, 2.5, 0.7])
                     initials = "".join(w[0].upper() for w in u["name"].split()[:2])
-                    uc1.markdown(f'<div class="avatar">{initials}</div>', unsafe_allow_html=True)
-                    uc2.markdown(f"**{u['name']}**")
+                    uc1.markdown(f'<div class="avatar">{safe(initials)}</div>', unsafe_allow_html=True)
+                    uc2.markdown(f"**{safe(u['name'])}**")
                     uc3.caption(u["email"])
                     slot_label = booked_map.get(u["email"])
                     if slot_label:
-                        uc4.markdown(f'<span class="badge b-booked">📅 {slot_label}</span>',
+                        uc4.markdown(f'<span class="badge b-booked">📅 {safe(slot_label)}</span>',
                                      unsafe_allow_html=True)
                     else:
                         uc4.markdown('<span class="badge b-none">אין הזמנה</span>',
                                      unsafe_allow_html=True)
                     if uc5.button("🗑️", key=f"delu_{u['email']}"):
-                        delete_user(u["email"])
+                        booking_service.cancel_user_booking(supabase, st.secrets, u["email"])
+                        delete_user_record(supabase, u["email"])
                         st.rerun()
 
     st.divider()
@@ -727,12 +453,13 @@ def admin_view():
         st.session_state.admin_auth = False
         st.rerun()
 
+
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 def main():
     inject_css()
-    if get_mode() == "admin":
+    if _get_mode() == "admin":
         admin_view()
     else:
         user_view()
@@ -740,9 +467,10 @@ def main():
     now = now_il()
     st.markdown(
         f'<div class="footer">🕐 {now.strftime("%H:%M")} שעון ישראל'
-        f' &nbsp;|&nbsp; <span dir="rtl">{to_heb_short(now.date())}</span></div>',
+        f' &nbsp;|&nbsp; <span dir="rtl">{safe(to_heb_short(now.date()))}</span></div>',
         unsafe_allow_html=True,
     )
+
 
 if __name__ == "__main__":
     main()
