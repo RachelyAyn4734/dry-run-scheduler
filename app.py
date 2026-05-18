@@ -437,11 +437,12 @@ def user_view():
                             user["name"],
                             user["email"],
                         )
+                        print(f"[BOOK] Slot booked: id={ps['id']}, user={user['name']}, gcal_ok={gcal_ok}")
                         if gcal_ok:
                             st.toast("📅 הזמנת לוח השנה נשלחה לאימייל שלך!")
                         st.session_state.pending_slot = None
                         st.balloons()
-                        st.rerun()
+                        st.success("✅ הפגישה נקבעה בהצלחה!")
                     if c2.button("❌ ביטול", use_container_width=True):
                         st.session_state.pending_slot = None
                         st.rerun()
