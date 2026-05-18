@@ -110,14 +110,14 @@ def create_calendar_event(
     start_time: str,
     user_name: str,
     user_email: str,
-) -> bool:
-    """Create a 1-hour Google Calendar event. Returns True on success."""
+) -> str:
+    """Create a 1-hour Google Calendar event. Returns event_id on success, empty string on failure."""
     print(f"[GCAL] create_calendar_event() called: date={slot_date}, time={start_time}, user={user_name}, email={user_email}")
     service = get_calendar_service()
     if service is None:
         print("[GCAL] service is None — aborting event creation")
         st.error("🔴 Google Calendar service לא אותחל. בדקי את ה-Secrets.")
-        return False
+        return ""
     try:
         t = start_time[:5]
         start_dt = datetime.strptime(f"{slot_date.isoformat()} {t}", "%Y-%m-%d %H:%M")
@@ -133,13 +133,77 @@ def create_calendar_event(
         print(f"[GCAL] Inserting event to calendar: {calendar_id}")
         print(f"[GCAL] Event payload: {event}")
         result = service.events().insert(calendarId=calendar_id, body=event).execute()
-        print(f"[GCAL] Event created successfully! id={result.get('id')}, link={result.get('htmlLink')}")
-        return True
+        event_id = result.get("id", "")
+        print(f"[GCAL] Event created successfully! id={event_id}, link={result.get('htmlLink')}")
+        return event_id
     except Exception as e:
         tb = traceback.format_exc()
         print(f"[GCAL] EXCEPTION in create_calendar_event:\n{tb}")
         st.warning(f"⚠️ ההזמנה נשמרה, אך שליחת הזמנת לוח השנה נכשלה: {e}")
         st.error(f"🔴 פרטי שגיאה (create_calendar_event):\n```\n{tb}\n```")
+        return ""
+
+
+def delete_calendar_event(event_id: str) -> bool:
+    """Delete a Google Calendar event by its event_id. Returns True on success."""
+    if not event_id:
+        print("[GCAL] delete_calendar_event: no event_id provided, skipping")
+        return False
+    print(f"[GCAL] delete_calendar_event() called: event_id={event_id}")
+    service = get_calendar_service()
+    if service is None:
+        print("[GCAL] service is None — aborting event deletion")
+        return False
+    try:
+        calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
+        service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        print(f"[GCAL] Event {event_id} deleted successfully")
+        return True
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[GCAL] EXCEPTION in delete_calendar_event:\n{tb}")
+        return False
+
+
+def send_confirmation_email(user_email: str, user_name: str, date_str: str, time_str: str) -> bool:
+    """Send a Hebrew booking confirmation email via SMTP. Returns True on success."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+    from email.header import Header
+    print(f"[MAIL] send_confirmation_email() called: to={user_email}, name={user_name}, date={date_str}, time={time_str}")
+    try:
+        smtp_server   = st.secrets.get("SMTP_SERVER", "")
+        smtp_port     = int(st.secrets.get("SMTP_PORT", 587))
+        smtp_user     = st.secrets.get("SMTP_USER", "")
+        smtp_password = st.secrets.get("SMTP_PASSWORD", "")
+        if not smtp_server or not smtp_user or not smtp_password:
+            print("[MAIL] SMTP secrets missing — skipping email")
+            return False
+        subject = f"אישור פגישה: {user_name}"
+        body = (
+            f"שלום {user_name},\n\n"
+            f"פגישת ה-Dry Run שלך אושרה!\n\n"
+            f"📅 תאריך: {date_str}\n"
+            f"🕐 שעה: {time_str}\n\n"
+            f"נשמח לראותך!\n"
+            f"צוות Dry Run"
+        )
+        msg = MIMEMultipart()
+        msg["From"]    = smtp_user
+        msg["To"]      = user_email
+        msg["Subject"] = Header(subject, "utf-8")
+        msg.attach(MIMEText(body, "plain", "utf-8"))
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, user_email, msg.as_string())
+        print(f"[MAIL] Confirmation email sent successfully to {user_email}")
+        return True
+    except Exception as e:
+        tb = traceback.format_exc()
+        print(f"[MAIL] EXCEPTION in send_confirmation_email:\n{tb}")
         return False
 
 
@@ -300,10 +364,11 @@ def add_slot(slot_date: date, time_slot: str) -> bool:
     }).execute()
     return True
 
-def book_slot(slot_id: int, user_email: str, user_name: str):
-    supabase.table("slots").update({
-        "is_booked": True, "user_email": user_email, "booked_by": user_name,
-    }).eq("id", slot_id).execute()
+def book_slot(slot_id: int, user_email: str, user_name: str, gcal_event_id: str = ""):
+    payload = {"is_booked": True, "user_email": user_email, "booked_by": user_name}
+    if gcal_event_id:
+        payload["gcal_event_id"] = gcal_event_id
+    supabase.table("slots").update(payload).eq("id", slot_id).execute()
 
 def cancel_slot(slot_id: int):
     supabase.table("slots").update({
@@ -383,6 +448,9 @@ def user_view():
                 st.warning(f"לבטל את **{gd.strftime('%d/%m/%Y')} @ {slot_range}**?")
                 c1, c2 = st.columns(2)
                 if c1.button("כן, בטלי", type="primary", use_container_width=True):
+                    gcal_id = my_slot.get("gcal_event_id", "")
+                    if gcal_id:
+                        delete_calendar_event(gcal_id)
                     cancel_slot(my_slot["id"])
                     st.session_state.confirm_cancel = False
                     st.rerun()
@@ -428,16 +496,26 @@ def user_view():
                     """, unsafe_allow_html=True)
                     c1, c2 = st.columns(2)
                     if c1.button("✅ אישור", type="primary", use_container_width=True):
-                        book_slot(ps["id"], user["email"], user["name"])
-                        gcal_ok = create_calendar_event(
+                        gcal_event_id = create_calendar_event(
                             date.fromisoformat(ps["date"]),
                             ps["time"],
                             user["name"],
                             user["email"],
                         )
-                        print(f"[BOOK] Slot booked: id={ps['id']}, user={user['name']}, gcal_ok={gcal_ok}")
-                        if gcal_ok:
-                            st.toast("📅 הזמנת לוח השנה נשלחה לאימייל שלך!")
+                        book_slot(ps["id"], user["email"], user["name"], gcal_event_id)
+                        print(f"[BOOK] Slot booked: id={ps['id']}, user={user['name']}, gcal_event_id={gcal_event_id!r}")
+                        try:
+                            mail_ok = send_confirmation_email(
+                                user["email"], user["name"],
+                                ps["date"], ps["time_range"],
+                            )
+                        except Exception as _mail_exc:
+                            print(f"[MAIL] Unexpected error calling send_confirmation_email: {_mail_exc}")
+                            mail_ok = False
+                        if gcal_event_id:
+                            st.toast("📅 האירוע נוסף ליומן Google!")
+                        if mail_ok:
+                            st.toast("✉️ מייל אישור נשלח אליך!")
                         st.session_state.pending_slot = None
                         st.balloons()
                         st.success("✅ הפגישה נקבעה בהצלחה!")
