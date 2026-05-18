@@ -125,16 +125,14 @@ def create_calendar_event(
         tz_name  = "Asia/Jerusalem"
         event = {
             "summary": f"Dry Run: {user_name}",
-            "description": "Scheduled via Dry Run Scheduler App",
+            "description": f"Scheduled via Dry Run Scheduler App\nשם: {user_name}\nאימייל: {user_email}",
             "start": {"dateTime": start_dt.strftime("%Y-%m-%dT%H:%M:%S"), "timeZone": tz_name},
             "end":   {"dateTime": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),   "timeZone": tz_name},
-            "attendees": [{"email": user_email}],
-            "sendUpdates": "all",
         }
         calendar_id = st.secrets.get("CALENDAR_ID", "rachelyayn@gmail.com")
         print(f"[GCAL] Inserting event to calendar: {calendar_id}")
         print(f"[GCAL] Event payload: {event}")
-        result = service.events().insert(calendarId=calendar_id, body=event, sendNotifications=True).execute()
+        result = service.events().insert(calendarId=calendar_id, body=event).execute()
         print(f"[GCAL] Event created successfully! id={result.get('id')}, link={result.get('htmlLink')}")
         return True
     except Exception as e:
