@@ -63,3 +63,118 @@ def send_confirmation(
     except Exception:
         logger.exception("[MAIL] Failed to send email to %s", user_email)
         return False
+
+
+def send_visit_notification(
+    secrets,
+    manager_email: str,
+    manager_name: str,
+    visitor_name: str,
+    date_str: str,
+    time_str: str,
+    heb_date_str: str = "",
+) -> bool:
+    """
+    Send a Hebrew visit-scheduled notification to a single manager.
+    Returns True on success, False on any failure. Does NOT raise.
+    """
+    smtp_server   = secrets.get("SMTP_SERVER", "")
+    smtp_port     = int(secrets.get("SMTP_PORT", 587))
+    smtp_user     = secrets.get("SMTP_USER", "")
+    smtp_password = secrets.get("SMTP_PASSWORD", "")
+
+    if not smtp_server or not smtp_user or not smtp_password:
+        logger.warning("[MAIL] SMTP secrets incomplete — skipping visit notification")
+        return False
+
+    subject = "נקבע ביקור חדש אצל סבתא"
+    heb_line = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
+    body = (
+        f"שלום {manager_name},\n\n"
+        f"נקבע ביקור חדש אצל סבתא.\n\n"
+        f"שם המבקר/ת: {visitor_name}\n"
+        f"תאריך: {date_str}\n"
+        f"שעה: {time_str}\n"
+        f"{heb_line}"
+        f"\nיום נעים 🌸\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"]    = smtp_user
+    msg["To"]      = manager_email
+    msg["Subject"] = Header(subject, "utf-8")
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        logger.info("[MAIL] Sending visit notification to %s", manager_email)
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, manager_email, msg.as_string())
+        logger.info("[MAIL] Visit notification sent to %s", manager_email)
+        return True
+    except Exception:
+        logger.exception("[MAIL] Failed to send visit notification to %s", manager_email)
+        return False
+
+
+def send_visit_notification_v2(
+    secrets,
+    manager_email: str,
+    manager_name: str,
+    visitor_name: str,
+    grandma_name: str,
+    date_str: str,
+    time_str: str,
+    heb_date_str: str = "",
+    participant_count: int = 1,
+) -> bool:
+    """
+    Send a Hebrew visit notification that includes grandma name and participant count.
+    Used by the multi-grandma booking flow (Phase 3+).
+    Returns True on success, False on any failure. Does NOT raise.
+    """
+    smtp_server   = secrets.get("SMTP_SERVER", "")
+    smtp_port     = int(secrets.get("SMTP_PORT", 587))
+    smtp_user     = secrets.get("SMTP_USER", "")
+    smtp_password = secrets.get("SMTP_PASSWORD", "")
+
+    if not smtp_server or not smtp_user or not smtp_password:
+        logger.warning("[MAIL] SMTP secrets incomplete — skipping visit notification v2")
+        return False
+
+    subject = f"נקבע ביקור חדש אצל {grandma_name}"
+    heb_line          = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
+    participants_line = f"מספר משתתפים: {participant_count}\n" if participant_count > 1 else ""
+    body = (
+        f"שלום {manager_name},\n\n"
+        f"נקבע ביקור חדש אצל {grandma_name}.\n\n"
+        f"שם המבקר/ת: {visitor_name}\n"
+        f"תאריך: {date_str}\n"
+        f"שעה: {time_str}\n"
+        f"{heb_line}"
+        f"{participants_line}"
+        f"\nיום נעים 🌸\n"
+    )
+
+    msg = MIMEMultipart()
+    msg["From"]    = smtp_user
+    msg["To"]      = manager_email
+    msg["Subject"] = Header(subject, "utf-8")
+    msg.attach(MIMEText(body, "plain", "utf-8"))
+
+    try:
+        logger.info("[MAIL] Sending visit notification v2 to %s", manager_email)
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, manager_email, msg.as_string())
+        logger.info("[MAIL] Visit notification v2 sent to %s", manager_email)
+        return True
+    except Exception:
+        logger.exception("[MAIL] Failed to send visit notification v2 to %s", manager_email)
+        return False

@@ -1,8 +1,10 @@
 streamlit>=1.35.0
 supabase>=2.4.0
+websockets>=13.0,<16
 pyluach>=1.4.0
 pytz>=2024.1
 pandas>=2.2.0
 google-auth>=2.29.0
 google-api-python-client>=2.130.0
+truststore>=0.9.1
 # re is part of Python stdlib — no install needed
