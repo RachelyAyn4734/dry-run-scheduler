@@ -1778,8 +1778,8 @@ def main():
     elif mode == "grandma_admin":
         # Dedicated grandma visits manager entry point — ignores any stale active_module
         grandma_admin_view()
-    elif mode == "user":
-        # Backward-compat direct link to Dry Run
+    elif mode in ("user", "dryrun"):
+        # Direct link to Dry Run (?mode=user legacy, ?mode=dryrun new)
         user_view()
     elif mode == "grandma":
         # Direct shareable link — bypass module selection entirely
