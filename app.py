@@ -738,6 +738,13 @@ def grandma_schedule_view():
         remaining = ps.get("remaining_spots", ps.get("max_participants", 1))
 
         with st.container(border=True):
+            st.markdown("""
+            <style>
+            div[data-testid="stRadio"] { direction: rtl; text-align: right; }
+            div[data-testid="stRadio"] label { direction: rtl; }
+            div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
+            </style>
+            """, unsafe_allow_html=True)
             st.markdown('<p class="sec-title" style="direction:rtl;">✅ אישור ביקור</p>',
                         unsafe_allow_html=True)
             st.markdown(f"""
