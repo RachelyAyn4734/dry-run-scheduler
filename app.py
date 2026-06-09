@@ -773,8 +773,12 @@ def grandma_schedule_view():
                 )
                 allow_joiners = joiners_choice.startswith("כן")
 
+            # c1=left=חזרה, c2=right=אישור — natural RTL order
             c1, c2 = st.columns(2)
-            if c1.button("✅ אישור", type="primary", use_container_width=True):
+            if c1.button("חזרה →", use_container_width=True):
+                st.session_state.grandma_pending_slot = None
+                st.rerun()
+            if c2.button("✅ אישור", type="primary", use_container_width=True):
                 result = grandma_visit_service.book_visit(
                     supabase, st.secrets,
                     slot_id=ps["id"],
@@ -797,9 +801,6 @@ def grandma_schedule_view():
                     st.session_state.grandma_booking_success = True
                     st.session_state.grandma_screen = "dashboard"
                     st.rerun()
-            if c2.button("חזרה →", use_container_width=True):
-                st.session_state.grandma_pending_slot = None
-                st.rerun()
         return
 
     # ── Available slots ────────────────────────────────────────
