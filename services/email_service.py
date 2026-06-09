@@ -12,6 +12,35 @@ from email.mime.text import MIMEText
 logger = logging.getLogger(__name__)
 
 
+def _get_smtp_config(secrets) -> tuple[str, int, str, str] | None:
+    """
+    Read and validate SMTP secrets. Returns (server, port, user, password) or None.
+    Logs which specific keys are missing — never logs their values.
+    """
+    smtp_server   = secrets.get("SMTP_SERVER", "")
+    smtp_port_raw = secrets.get("SMTP_PORT", 587)
+    smtp_user     = secrets.get("SMTP_USER", "")
+    smtp_password = secrets.get("SMTP_PASSWORD", "")
+
+    missing = [k for k, v in [
+        ("SMTP_SERVER", smtp_server),
+        ("SMTP_USER", smtp_user),
+        ("SMTP_PASSWORD", smtp_password),
+    ] if not v]
+
+    if missing:
+        logger.warning("[MAIL] Missing required secret(s): %s — email skipped", ", ".join(missing))
+        return None
+
+    try:
+        smtp_port = int(smtp_port_raw)
+    except (TypeError, ValueError):
+        logger.warning("[MAIL] SMTP_PORT is not a valid integer (%r) — defaulting to 587", smtp_port_raw)
+        smtp_port = 587
+
+    return smtp_server, smtp_port, smtp_user, smtp_password
+
+
 def send_confirmation(
     secrets,
     user_email: str,
@@ -23,14 +52,10 @@ def send_confirmation(
     Send a Hebrew booking-confirmation email via SMTP.
     Returns True on success, False on any failure. Does NOT raise.
     """
-    smtp_server   = secrets.get("SMTP_SERVER", "")
-    smtp_port     = int(secrets.get("SMTP_PORT", 587))
-    smtp_user     = secrets.get("SMTP_USER", "")
-    smtp_password = secrets.get("SMTP_PASSWORD", "")
-
-    if not smtp_server or not smtp_user or not smtp_password:
-        logger.warning("[MAIL] SMTP secrets incomplete — skipping email")
+    cfg = _get_smtp_config(secrets)
+    if cfg is None:
         return False
+    smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
     subject = f"אישור פגישה: {user_name}"
     body = (
@@ -78,14 +103,10 @@ def send_visit_notification(
     Send a Hebrew visit-scheduled notification to a single manager.
     Returns True on success, False on any failure. Does NOT raise.
     """
-    smtp_server   = secrets.get("SMTP_SERVER", "")
-    smtp_port     = int(secrets.get("SMTP_PORT", 587))
-    smtp_user     = secrets.get("SMTP_USER", "")
-    smtp_password = secrets.get("SMTP_PASSWORD", "")
-
-    if not smtp_server or not smtp_user or not smtp_password:
-        logger.warning("[MAIL] SMTP secrets incomplete — skipping visit notification")
+    cfg = _get_smtp_config(secrets)
+    if cfg is None:
         return False
+    smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
     subject = "נקבע ביקור חדש אצל סבתא"
     heb_line = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
@@ -137,14 +158,10 @@ def send_visit_notification_v2(
     Used by the multi-grandma booking flow (Phase 3+).
     Returns True on success, False on any failure. Does NOT raise.
     """
-    smtp_server   = secrets.get("SMTP_SERVER", "")
-    smtp_port     = int(secrets.get("SMTP_PORT", 587))
-    smtp_user     = secrets.get("SMTP_USER", "")
-    smtp_password = secrets.get("SMTP_PASSWORD", "")
-
-    if not smtp_server or not smtp_user or not smtp_password:
-        logger.warning("[MAIL] SMTP secrets incomplete — skipping visit notification v2")
+    cfg = _get_smtp_config(secrets)
+    if cfg is None:
         return False
+    smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
     subject = f"נקבע ביקור חדש אצל {grandma_name}"
     heb_line          = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
