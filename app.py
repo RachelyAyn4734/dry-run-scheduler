@@ -197,7 +197,7 @@ def inject_css():
     .b-booked { background:#d1fae5; color:#065f46; }
     .b-none   { background:#f3f4f6; color:#6b7280; }
     .b-warm   { background:#fef3c7; color:#92400e; }
-    .sec-title { font-size:20px!important; font-weight:800!important; color:#111827!important; margin:0 0 14px!important; }
+    .sec-title { font-size:20px!important; font-weight:800!important; color:#111827!important; margin:0 0 14px!important; text-align:right!important; direction:rtl!important; }
     .avatar {
         width:42px; height:42px; border-radius:50%;
         background:linear-gradient(135deg,#4f46e5,#7c3aed);
@@ -234,6 +234,17 @@ def inject_css():
     .grandma-card .gc-emoji { font-size: 64px; display: block; margin-bottom: 10px; line-height: 1; }
     .grandma-card .gc-name  { font-size: 22px; font-weight: 800; color: #92400e; margin-bottom: 8px; }
     .grandma-card .gc-desc  { font-size: 14px; color: #6b7280; line-height: 1.6; }
+    /* RTL form controls — Hebrew-first app */
+    .stTextInput input, .stTextArea textarea, .stNumberInput input {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    [data-testid="stWidgetLabel"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
+    .stRadio [role="radiogroup"] { direction: rtl !important; }
+    .stRadio label { direction: rtl !important; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -500,14 +511,14 @@ def grandma_select_view():
     except Exception:
         logger.exception("[GRANDMA] Failed to load grandmas list")
         st.error("שגיאה בטעינת הנתונים. אנא נסי שוב.")
-        if st.button("← חזרה לתפריט", use_container_width=True):
+        if st.button("חזרה לתפריט →", use_container_width=True):
             _grandma_reset()
             st.rerun()
         return
 
     if not grandmas:
         st.info("אין סבתות פעילות כרגע. אנא פני למנהל/ת התוכנית.")
-        if st.button("← חזרה לתפריט", use_container_width=True):
+        if st.button("חזרה לתפריט →", use_container_width=True):
             _grandma_reset()
             st.rerun()
         return
@@ -542,7 +553,7 @@ def grandma_select_view():
                 st.rerun()
 
     st.divider()
-    if st.button("← חזרה לתפריט", use_container_width=True):
+    if st.button("חזרה לתפריט →", use_container_width=True):
         _grandma_reset()
         st.rerun()
 
@@ -586,7 +597,7 @@ def grandma_identify_view():
                     st.session_state.grandma_screen = "select_grandma"
                     st.rerun()
 
-    if st.button("← חזרה לתפריט", use_container_width=True):
+    if st.button("חזרה לתפריט →", use_container_width=True):
         _grandma_reset()
         st.rerun()
 
@@ -780,7 +791,7 @@ def grandma_schedule_view():
                     st.session_state.grandma_booking_success = True
                     st.session_state.grandma_screen = "dashboard"
                     st.rerun()
-            if c2.button("חזרה", use_container_width=True):
+            if c2.button("חזרה →", use_container_width=True):
                 st.session_state.grandma_pending_slot = None
                 st.rerun()
         return
@@ -843,7 +854,7 @@ def grandma_schedule_view():
                     st.rerun()
 
     st.divider()
-    if st.button("← חזרה לדשבורד", use_container_width=True):
+    if st.button("חזרה לדשבורד →", use_container_width=True):
         st.session_state.grandma_screen = "dashboard"
         st.rerun()
 
@@ -953,7 +964,7 @@ def grandma_notes_view():
                 st.session_state.grandma_screen = "dashboard"
                 st.rerun()
 
-    if st.button("← חזרה לדשבורד", use_container_width=True):
+    if st.button("חזרה לדשבורד →", use_container_width=True):
         st.session_state.grandma_note_visit = None
         st.session_state.grandma_screen = "dashboard"
         st.rerun()
@@ -983,7 +994,7 @@ def grandma_gallery_view():
     except Exception:
         logger.exception("[GRANDMA] Failed to load gallery grandma=%s", grandma_id)
         st.error("שגיאה בטעינת הגלריה. אנא נסי שוב.")
-        if st.button("← חזרה לדשבורד", use_container_width=True):
+        if st.button("חזרה לדשבורד →", use_container_width=True):
             st.session_state.grandma_screen = "dashboard"
             st.rerun()
         return
@@ -1010,7 +1021,7 @@ def grandma_gallery_view():
                     )
 
     st.divider()
-    if st.button("← חזרה לדשבורד", use_container_width=True):
+    if st.button("חזרה לדשבורד →", use_container_width=True):
         st.session_state.grandma_screen = "dashboard"
         st.rerun()
 
