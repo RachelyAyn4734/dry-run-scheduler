@@ -153,9 +153,9 @@ def inject_css():
     .date-card {
         background: white; border-radius: 18px; padding: 22px 26px 10px;
         margin-bottom: 18px; box-shadow: 0 3px 14px rgba(0,0,0,0.08);
-        border: 1.5px solid #e5e7eb;
+        border: 1.5px solid #e5e7eb; direction:rtl; text-align:right;
     }
-    .date-card .gc { font-size:20px; font-weight:700; color:#111827; }
+    .date-card .gc { font-size:20px; font-weight:700; color:#111827; direction:rtl; text-align:right; }
     .date-card .hc { font-size:18px; color:#6b21a8; font-weight:600; direction:rtl; text-align:right; margin-top:2px; }
     .my-slot {
         background: linear-gradient(135deg,#059669,#10b981); color:white;
