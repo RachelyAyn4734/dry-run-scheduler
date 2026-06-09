@@ -666,6 +666,11 @@ def grandma_dashboard_view():
                             grandma_visit_service.cancel_booked_visit(
                                 supabase, v["id"], v.get("slot_id") or "",
                                 descendant_id=desc_id or None,
+                                secrets=st.secrets,
+                                descendant_name=v.get("descendant_name") or name,
+                                grandma_name=v.get("grandma_name") or grandma_name,
+                                slot_start=v.get("slot_start") or "",
+                                participant_count=int(v.get("participant_count") or 1),
                             )
                             st.session_state.pop(f"confirm_cancel_visit_{v['id']}", None)
                             st.rerun()
@@ -741,18 +746,21 @@ def grandma_schedule_view():
             st.markdown("""
             <style>
             div[data-testid="stRadio"] { direction: rtl; text-align: right; }
+            div[data-testid="stRadio"] > div { direction: rtl; }
             div[data-testid="stRadio"] label { direction: rtl; }
+            div[data-testid="stRadio"] label p { text-align: right; }
             div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
+            div[data-testid="stNumberInput"] input { text-align: right; }
             </style>
             """, unsafe_allow_html=True)
             st.markdown('<p class="sec-title" style="direction:rtl;">✅ אישור ביקור</p>',
                         unsafe_allow_html=True)
             st.markdown(f"""
-            <div style="direction:rtl; font-size:17px; line-height:2.2;">
-                👤 <b>{safe(name)}</b><br>
-                🌸 <b>{safe(grandma_name)}</b><br>
-                📅 <b>{safe(dt.strftime('%d/%m/%Y'))}</b><br>
-                🕐 <b>{safe(dt.strftime('%H:%M'))} — {safe((_slot_dt(ps['slot_end'])).strftime('%H:%M'))}</b><br>
+            <div style="direction:rtl; text-align:right; font-size:17px; line-height:2.2;">
+                <strong>שם המבקר/ת:</strong> {safe(name)}<br>
+                <strong>סבתא:</strong> 🌸 {safe(grandma_name)}<br>
+                <strong>תאריך:</strong> 📅 {safe(dt.strftime('%d/%m/%Y'))}<br>
+                <strong>שעה:</strong> 🕐 {safe(dt.strftime('%H:%M'))} — {safe((_slot_dt(ps['slot_end'])).strftime('%H:%M'))}<br>
                 <span style="color:#92400e;">{safe(heb)}</span>
             </div>
             """, unsafe_allow_html=True)

@@ -154,7 +154,7 @@ def send_visit_notification_v2(
     allow_joiners: bool = False,
 ) -> bool:
     """
-    Send a Hebrew visit notification that includes grandma name and participant count.
+    Send an HTML Hebrew visit notification that includes grandma name and participant count.
     Used by the multi-grandma booking flow (Phase 3+).
     Returns True on success, False on any failure. Does NOT raise.
     """
@@ -164,26 +164,32 @@ def send_visit_notification_v2(
     smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
     subject = f"נקבע ביקור חדש אצל {grandma_name}"
-    heb_line          = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
-    participants_line = f"מספר משתתפים: {participant_count}\n" if participant_count > 1 else ""
-    joiners_line      = "הצטרפות: אפשרי להצטרף לביקור\n" if allow_joiners else "הצטרפות: ביקור פרטי\n"
-    body = (
-        f"שלום {manager_name},\n\n"
-        f"נקבע ביקור חדש אצל {grandma_name}.\n\n"
-        f"שם המבקר/ת: {visitor_name}\n"
-        f"תאריך: {date_str}\n"
-        f"שעה: {time_str}\n"
-        f"{heb_line}"
-        f"{participants_line}"
-        f"{joiners_line}"
-        f"\nיום נעים 🌸\n"
-    )
+    joiners_text = "אפשרי להצטרף לביקור" if allow_joiners else "ביקור פרטי"
+    heb_row = f"<strong>תאריך עברי:</strong> {heb_date_str}<br>" if heb_date_str else ""
 
-    msg = MIMEMultipart()
+    html_body = f"""
+<div dir="rtl" style="text-align:right; font-family:Arial, sans-serif; line-height:1.8;">
+  <h2>נקבע ביקור חדש אצל {grandma_name}</h2>
+  <p>שלום {manager_name},</p>
+  <p>נקבע ביקור חדש.</p>
+  <p>
+    <strong>שם המבקר/ת:</strong> {visitor_name}<br>
+    <strong>סבתא:</strong> {grandma_name}<br>
+    <strong>תאריך:</strong> {date_str}<br>
+    {heb_row}
+    <strong>שעה:</strong> {time_str}<br>
+    <strong>מספר משתתפים:</strong> {participant_count}<br>
+    <strong>הצטרפות:</strong> {joiners_text}
+  </p>
+  <p>יום נעים 🌸</p>
+</div>
+"""
+
+    msg = MIMEMultipart("alternative")
     msg["From"]    = smtp_user
     msg["To"]      = manager_email
     msg["Subject"] = Header(subject, "utf-8")
-    msg.attach(MIMEText(body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
         logger.info("[MAIL] Sending visit notification v2 to %s", manager_email)
@@ -197,4 +203,65 @@ def send_visit_notification_v2(
         return True
     except Exception:
         logger.exception("[MAIL] Failed to send visit notification v2 to %s", manager_email)
+        return False
+
+
+def send_visit_cancellation(
+    secrets,
+    manager_email: str,
+    manager_name: str,
+    visitor_name: str,
+    grandma_name: str,
+    date_str: str,
+    time_str: str,
+    participant_count: int = 1,
+    heb_date_str: str = "",
+) -> bool:
+    """
+    Send an HTML Hebrew cancellation notification to a single manager.
+    Returns True on success, False on any failure. Does NOT raise.
+    """
+    cfg = _get_smtp_config(secrets)
+    if cfg is None:
+        return False
+    smtp_server, smtp_port, smtp_user, smtp_password = cfg
+
+    subject = f"בוטל ביקור אצל {grandma_name}"
+    heb_row = f"<strong>תאריך עברי:</strong> {heb_date_str}<br>" if heb_date_str else ""
+
+    html_body = f"""
+<div dir="rtl" style="text-align:right; font-family:Arial, sans-serif; line-height:1.8;">
+  <h2>בוטל ביקור אצל {grandma_name}</h2>
+  <p>שלום {manager_name},</p>
+  <p>ביקור שתוכנן בוטל.</p>
+  <p>
+    <strong>שם המבקר/ת:</strong> {visitor_name}<br>
+    <strong>סבתא:</strong> {grandma_name}<br>
+    <strong>תאריך:</strong> {date_str}<br>
+    {heb_row}
+    <strong>שעה:</strong> {time_str}<br>
+    <strong>מספר משתתפים:</strong> {participant_count}
+  </p>
+  <p>יום נעים 🌸</p>
+</div>
+"""
+
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = smtp_user
+    msg["To"]      = manager_email
+    msg["Subject"] = Header(subject, "utf-8")
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+
+    try:
+        logger.info("[MAIL] Sending visit cancellation to %s", manager_email)
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, manager_email, msg.as_string())
+        logger.info("[MAIL] Visit cancellation sent to %s", manager_email)
+        return True
+    except Exception:
+        logger.exception("[MAIL] Failed to send visit cancellation to %s", manager_email)
         return False

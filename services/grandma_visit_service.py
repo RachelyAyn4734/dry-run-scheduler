@@ -162,15 +162,21 @@ def cancel_booked_visit(
     visit_id: str,
     slot_id: str = "",
     descendant_id: str | None = None,
+    *,
+    secrets=None,
+    descendant_name: str = "",
+    grandma_name: str = "",
+    slot_start: str = "",
+    participant_count: int = 1,
 ) -> dict:
     """
     Cancel a visit using the cancel_visit_booking RPC.
 
-    slot_id: accepted for backward compatibility with existing UI calls but ignored —
-             the RPC handles slot release internally.
+    slot_id: accepted for backward compatibility but ignored — the RPC handles slot release.
+    descendant_id: pass visitor UUID to enforce ownership; None skips the check (admin path).
 
-    descendant_id: pass the logged-in visitor's UUID to enforce ownership (visitor path).
-                   Omit or pass None for admin cancellation — ownership check is skipped.
+    Pass secrets + visit details (keyword-only) to trigger manager cancellation emails.
+    Email failure never rolls back the cancellation.
 
     Returns: {success, error_msg}
     """
@@ -193,4 +199,28 @@ def cancel_booked_visit(
         return {"success": False, "error_msg": error_msg}
 
     logger.info("[GRANDMA] Cancelled visit=%s descendant=%s", visit_id, descendant_id)
+
+    if secrets and slot_start:
+        try:
+            date_str, time_str, heb_date_str = _format_slot_for_email(slot_start)
+            managers = get_active_managers(supabase)
+            for manager in managers:
+                ok = email_service.send_visit_cancellation(
+                    secrets,
+                    manager_email=manager["email"],
+                    manager_name=manager["name"],
+                    visitor_name=descendant_name,
+                    grandma_name=grandma_name,
+                    date_str=date_str,
+                    time_str=time_str,
+                    heb_date_str=heb_date_str,
+                    participant_count=participant_count,
+                )
+                if not ok:
+                    logger.warning(
+                        "[GRANDMA] Cancellation email failed for manager=%s", manager["email"]
+                    )
+        except Exception:
+            logger.exception("[GRANDMA] Error sending cancellation emails for visit=%s", visit_id)
+
     return {"success": True, "error_msg": None}
