@@ -207,6 +207,7 @@ def inject_css():
     .bov-card {
         background:white; border-radius:16px; padding:16px 20px; margin-bottom:10px;
         border-left:5px solid #7c3aed; box-shadow:0 2px 8px rgba(0,0,0,0.06);
+        direction:rtl; text-align:right;
     }
     .bov-card .slot-info { font-size:18px; font-weight:700; color:#111827; }
     .bov-card .user-info { font-size:15px; color:#6b7280; margin-top:4px; }
@@ -234,6 +235,11 @@ def inject_css():
     .grandma-card .gc-emoji { font-size: 64px; display: block; margin-bottom: 10px; line-height: 1; }
     .grandma-card .gc-name  { font-size: 22px; font-weight: 800; color: #92400e; margin-bottom: 8px; }
     .grandma-card .gc-desc  { font-size: 14px; color: #6b7280; line-height: 1.6; }
+    /* RTL alert messages (info/warning/error/success) */
+    [data-testid="stAlert"] [data-testid="stMarkdownContainer"] {
+        direction: rtl !important;
+        text-align: right !important;
+    }
     /* RTL form controls — Hebrew-first app */
     .stTextInput input, .stTextArea textarea, .stNumberInput input {
         direction: rtl !important;
@@ -824,7 +830,7 @@ def grandma_schedule_view():
         slots = [s for s in slots if _remaining(s) > 0]
 
     if not slots:
-        st.info("😔 אין מועדים פנויים כרגע. אנא בדקי שוב מאוחר יותר.")
+        st.info("אין מועדים פנויים כרגע. כדאי לבדוק שוב מאוחר יותר.")
     else:
         st.markdown('<p class="sec-title" style="direction:rtl;">🗓️ מועדים פנויים</p>',
                     unsafe_allow_html=True)
@@ -1080,12 +1086,13 @@ def grandma_admin_view():
 
                     gc1, gc2 = st.columns(2)
                     today_il = now_il().date()
-                    g_date = gc1.date_input("תאריך", value=today_il,
+                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
+                    # gc1 = left column (שעה), gc2 = right column (תאריך) — RTL natural order
+                    g_time = gc1.selectbox("שעה", all_hours, key="ga_slot_time",
+                                           format_func=slot_range_label)
+                    g_date = gc2.date_input("תאריך", value=today_il,
                                             min_value=today_il, format="DD/MM/YYYY",
                                             key="ga_slot_date")
-                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
-                    g_time = gc2.selectbox("שעה", all_hours, key="ga_slot_time",
-                                           format_func=slot_range_label)
 
                     cp1, cp2 = st.columns(2)
                     max_parts = cp1.number_input(

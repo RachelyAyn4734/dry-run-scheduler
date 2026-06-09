@@ -145,6 +145,7 @@ def book_visit(
             time_str=time_str,
             heb_date_str=heb_date_str,
             participant_count=participant_count,
+            allow_joiners=allow_joiners,
         )
         if not ok:
             mail_ok = False

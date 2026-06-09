@@ -130,6 +130,7 @@ def send_visit_notification_v2(
     time_str: str,
     heb_date_str: str = "",
     participant_count: int = 1,
+    allow_joiners: bool = False,
 ) -> bool:
     """
     Send a Hebrew visit notification that includes grandma name and participant count.
@@ -148,6 +149,7 @@ def send_visit_notification_v2(
     subject = f"נקבע ביקור חדש אצל {grandma_name}"
     heb_line          = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
     participants_line = f"מספר משתתפים: {participant_count}\n" if participant_count > 1 else ""
+    joiners_line      = "הצטרפות: אפשרי להצטרף לביקור\n" if allow_joiners else "הצטרפות: ביקור פרטי\n"
     body = (
         f"שלום {manager_name},\n\n"
         f"נקבע ביקור חדש אצל {grandma_name}.\n\n"
@@ -156,6 +158,7 @@ def send_visit_notification_v2(
         f"שעה: {time_str}\n"
         f"{heb_line}"
         f"{participants_line}"
+        f"{joiners_line}"
         f"\nיום נעים 🌸\n"
     )
 
