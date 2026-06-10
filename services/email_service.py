@@ -3,6 +3,7 @@ Email service.
 Pure Python — no Streamlit imports.
 Pass st.secrets (or any dict-like) as `secrets`.
 """
+import html
 import logging
 import smtplib
 from email.header import Header
@@ -163,21 +164,43 @@ def send_visit_notification_v2(
         return False
     smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
-    subject = f"נקבע ביקור חדש אצל {grandma_name}"
+    # Escape all user-supplied values before embedding in HTML.
+    h_manager   = html.escape(manager_name)
+    h_visitor   = html.escape(visitor_name)
+    h_grandma   = html.escape(grandma_name)
+    h_date      = html.escape(date_str)
+    h_time      = html.escape(time_str)
+    h_heb       = html.escape(heb_date_str) if heb_date_str else ""
     joiners_text = "אפשרי להצטרף לביקור" if allow_joiners else "ביקור פרטי"
-    heb_row = f"<strong>תאריך עברי:</strong> {heb_date_str}<br>" if heb_date_str else ""
+    heb_row_html = f"<strong>תאריך עברי:</strong> {h_heb}<br>" if h_heb else ""
+    heb_row_text = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
+
+    subject = f"נקבע ביקור חדש אצל {grandma_name}"
+
+    plain_body = (
+        f"שלום {manager_name},\n\n"
+        f"נקבע ביקור חדש אצל {grandma_name}.\n\n"
+        f"שם המבקר/ת: {visitor_name}\n"
+        f"סבתא: {grandma_name}\n"
+        f"תאריך: {date_str}\n"
+        f"{heb_row_text}"
+        f"שעה: {time_str}\n"
+        f"מספר משתתפים: {participant_count}\n"
+        f"הצטרפות: {joiners_text}\n\n"
+        f"יום נעים 🌸\n"
+    )
 
     html_body = f"""
 <div dir="rtl" style="text-align:right; font-family:Arial, sans-serif; line-height:1.8;">
-  <h2>נקבע ביקור חדש אצל {grandma_name}</h2>
-  <p>שלום {manager_name},</p>
+  <h2>נקבע ביקור חדש אצל {h_grandma}</h2>
+  <p>שלום {h_manager},</p>
   <p>נקבע ביקור חדש.</p>
   <p>
-    <strong>שם המבקר/ת:</strong> {visitor_name}<br>
-    <strong>סבתא:</strong> {grandma_name}<br>
-    <strong>תאריך:</strong> {date_str}<br>
-    {heb_row}
-    <strong>שעה:</strong> {time_str}<br>
+    <strong>שם המבקר/ת:</strong> {h_visitor}<br>
+    <strong>סבתא:</strong> {h_grandma}<br>
+    <strong>תאריך:</strong> {h_date}<br>
+    {heb_row_html}
+    <strong>שעה:</strong> {h_time}<br>
     <strong>מספר משתתפים:</strong> {participant_count}<br>
     <strong>הצטרפות:</strong> {joiners_text}
   </p>
@@ -185,11 +208,13 @@ def send_visit_notification_v2(
 </div>
 """
 
+    # plain first, html second — clients use the last supported part
     msg = MIMEMultipart("alternative")
     msg["From"]    = smtp_user
     msg["To"]      = manager_email
     msg["Subject"] = Header(subject, "utf-8")
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
 
     try:
         logger.info("[MAIL] Sending visit notification v2 to %s", manager_email)
@@ -226,31 +251,54 @@ def send_visit_cancellation(
         return False
     smtp_server, smtp_port, smtp_user, smtp_password = cfg
 
+    # Escape all user-supplied values before embedding in HTML.
+    h_manager  = html.escape(manager_name)
+    h_visitor  = html.escape(visitor_name)
+    h_grandma  = html.escape(grandma_name)
+    h_date     = html.escape(date_str)
+    h_time     = html.escape(time_str)
+    h_heb      = html.escape(heb_date_str) if heb_date_str else ""
+    heb_row_html = f"<strong>תאריך עברי:</strong> {h_heb}<br>" if h_heb else ""
+    heb_row_text = f"תאריך עברי: {heb_date_str}\n" if heb_date_str else ""
+
     subject = f"בוטל ביקור אצל {grandma_name}"
-    heb_row = f"<strong>תאריך עברי:</strong> {heb_date_str}<br>" if heb_date_str else ""
+
+    plain_body = (
+        f"שלום {manager_name},\n\n"
+        f"ביקור שתוכנן בוטל.\n\n"
+        f"שם המבקר/ת: {visitor_name}\n"
+        f"סבתא: {grandma_name}\n"
+        f"תאריך: {date_str}\n"
+        f"{heb_row_text}"
+        f"שעה: {time_str}\n"
+        f"מספר משתתפים: {participant_count}\n\n"
+        f"יום נעים 🌸\n"
+    )
 
     html_body = f"""
 <div dir="rtl" style="text-align:right; font-family:Arial, sans-serif; line-height:1.8;">
-  <h2>בוטל ביקור אצל {grandma_name}</h2>
-  <p>שלום {manager_name},</p>
+  <h2>בוטל ביקור אצל {h_grandma}</h2>
+  <p>שלום {h_manager},</p>
   <p>ביקור שתוכנן בוטל.</p>
   <p>
-    <strong>שם המבקר/ת:</strong> {visitor_name}<br>
-    <strong>סבתא:</strong> {grandma_name}<br>
-    <strong>תאריך:</strong> {date_str}<br>
-    {heb_row}
-    <strong>שעה:</strong> {time_str}<br>
+    <strong>שם המבקר/ת:</strong> {h_visitor}<br>
+    <strong>סבתא:</strong> {h_grandma}<br>
+    <strong>תאריך:</strong> {h_date}<br>
+    {heb_row_html}
+    <strong>שעה:</strong> {h_time}<br>
     <strong>מספר משתתפים:</strong> {participant_count}
   </p>
   <p>יום נעים 🌸</p>
 </div>
 """
 
+    # plain first, html second — clients use the last supported part
     msg = MIMEMultipart("alternative")
     msg["From"]    = smtp_user
     msg["To"]      = manager_email
     msg["Subject"] = Header(subject, "utf-8")
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
 
     try:
         logger.info("[MAIL] Sending visit cancellation to %s", manager_email)

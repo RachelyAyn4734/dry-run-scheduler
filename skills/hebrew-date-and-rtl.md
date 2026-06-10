@@ -48,6 +48,9 @@ dt.strftime("%d/%m/%Y")   # "04/06/2026"
 dt.strftime("%H:%M")      # "14:30"
 ```
 
+**Never use `%A` (English weekday name) or `%B` (English month name) in any Hebrew-UI screen.**
+`dt.strftime('%A, %d %B %Y')` produces `"Monday, 15 June 2026"` — English text inside a Hebrew UI. Use `%d/%m/%Y` only.
+
 ### Hebrew calendar date
 Use `to_heb()` for full Hebrew date or `to_heb_short()` for short form (from `utils/dates.py`).
 
@@ -150,9 +153,56 @@ Body:
 
 ---
 
+## Navigation Button Arrows
+
+This project uses `→` on all back/exit buttons and `←` on forward/continue buttons. Be consistent.
+
+```python
+# Back buttons
+st.button("חזרה לתפריט →")
+st.button("חזרה לדשבורד →")
+st.button("חזרה →")
+
+# Forward/continue buttons
+st.button("המשך ←")
+st.button("בחרי ←")
+```
+
+Do **not** mix conventions in the same flow.
+
+---
+
+## Streamlit Alert RTL
+
+Native `st.info()`, `st.warning()`, `st.error()`, `st.success()` are left-aligned by default.
+The global CSS in `inject_css()` already fixes this via `[data-testid="stAlert"]`.
+Do **not** move that CSS block or remove it.
+
+For long Hebrew error messages, prefer the `_grandma_error_card()` helper in `app.py` for full RTL styling.
+
+---
+
+## Session State Keys — `_grandma_reset()`
+
+Every new dynamic session key added to the Grandma Visits flow **must** be cleaned up by `_grandma_reset()`.
+
+- Static named keys: add to the explicit list inside `_grandma_reset()`.
+- Dynamic keys with a prefix (e.g., `confirm_cancel_visit_{id}`): use the prefix-scan pattern already in `_grandma_reset()`:
+  ```python
+  stale = [k for k in st.session_state if k.startswith("your_prefix_")]
+  for k in stale:
+      del st.session_state[k]
+  ```
+
+**If you add a new session key and forget to add it to `_grandma_reset()`, users will see ghost UI state when re-entering the module.**
+
+---
+
 ## What to Avoid
 
 - Do **not** mix English labels with Hebrew values in the same widget.
 - Do **not** use `st.error("Error: ...")` — rewrite in Hebrew: `st.error("שגיאה: ...")`
 - Do **not** display raw ISO timestamps to users — always format as `dd/MM/yyyy HH:mm`
 - Do **not** use left-aligned text for Hebrew paragraphs in HTML blocks
+- Do **not** use `strftime('%A')` or `strftime('%B')` — these produce English text
+- Do **not** hardcode RTL CSS per-screen if it already exists in `inject_css()`

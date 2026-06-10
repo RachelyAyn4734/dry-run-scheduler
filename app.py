@@ -447,6 +447,10 @@ def _grandma_reset():
                 "grandma_pending_slot", "grandma_note_visit",
                 "grandma_booking_success", "grandma_name_not_found"]:
         st.session_state.pop(key, None)
+    # Clear dynamic per-visit cancellation confirmation keys to prevent ghost dialogs.
+    stale = [k for k in st.session_state if k.startswith("confirm_cancel_visit_")]
+    for k in stale:
+        del st.session_state[k]
     st.session_state.active_module = None
 
 
@@ -586,12 +590,13 @@ def grandma_identify_view():
                                    label_visibility="collapsed")
         if st.button("המשך ←", type="primary", use_container_width=True):
             st.session_state.grandma_name_not_found = False
-            if not name_input.strip():
+            name_stripped = name_input.strip()
+            if not name_stripped:
                 st.warning("נא להכניס שם.")
             else:
                 descendant = None
                 try:
-                    descendant = get_descendant_by_name(supabase, name_input)
+                    descendant = get_descendant_by_name(supabase, name_stripped)
                 except Exception:
                     logger.exception("[GRANDMA] name lookup failed")
                     # descendant stays None — treated identically to not-found below
@@ -840,7 +845,11 @@ def grandma_schedule_view():
             booked_by_slot[sid] = booked_by_slot.get(sid, 0) + (row.get("participant_count") or 1)
 
         def _remaining(s: dict) -> int:
-            return s["max_participants"] - booked_by_slot.get(s["id"], 0)
+            booked = booked_by_slot.get(s["id"], 0)
+            # Non-shareable slots: any existing booking makes the slot unavailable.
+            if not s.get("allows_shared_visits") and booked > 0:
+                return 0
+            return s["max_participants"] - booked
 
         # Drop slots that are actually full (capacity cache may lag slightly)
         slots = [s for s in slots if _remaining(s) > 0]

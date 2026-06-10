@@ -56,6 +56,9 @@ Session state keys for grandma module:
 - `grandma_visitor` — the descendant dict
 - `grandma_pending_slot` — slot awaiting confirmation
 - `grandma_note_visit_id` — visit being updated with notes/photo
+- `confirm_cancel_visit_{uuid}` — dynamic per-visit cancellation confirmation flag
+
+**Every new session key must be cleaned up in `_grandma_reset()`.** Dynamic-prefix keys use the prefix-scan pattern already in that function.
 
 ## Supabase
 
@@ -70,10 +73,14 @@ Session state keys for grandma module:
 
 - All Grandma Visits UI text is in Hebrew; use warm, family-friendly wording
 - Israeli date format: `dd/MM/yyyy` and `HH:mm`
+- **Never use `strftime('%A')` or `strftime('%B')` in Hebrew-UI screens** — these produce English day/month names
 - Hebrew calendar dates via `to_heb()` / `to_heb_short()` from `utils/dates.py` (uses `pyluach`)
 - RTL applied via inline `direction: rtl` in HTML blocks
 - **Always** escape user-provided strings with `safe()` from `utils/validation.py` before embedding in `unsafe_allow_html=True` blocks
+- In `email_service.py`, use `html.escape()` directly — do not import `safe()` from app layers
 - Avoid mixing Hebrew and English in the same UI element
+- Navigation buttons: `→` for back/exit, `←` for forward/continue — pick one convention and stay consistent
+- See `skills/hebrew-date-and-rtl.md` for full RTL/Hebrew guidance
 
 ## Date Handling
 
@@ -107,4 +114,14 @@ Users authenticate via email lookup in `users` table. Admins manage slots and us
 - Do not hardcode manager emails — always fetch from `visit_managers` table
 - Do not use the Supabase service role key in app code
 - All user data in HTML blocks must be escaped with `safe()`
+- All user data embedded in email HTML bodies must be escaped with `html.escape()`
+- HTML emails must include both a plain-text fallback and an HTML part (`MIMEMultipart("alternative")`)
+- Do not use deprecated repository functions (`create_visit`, `cancel_visit`) — use RPCs
 - Ask before deleting or rewriting large parts of the project
+
+## Skills Reference
+
+- `skills/hebrew-date-and-rtl.md` — Hebrew UI, RTL layout, date formatting, session state cleanup
+- `skills/email-notifications.md` — Email HTML/escaping, plain-text fallback, manager loading, secrets
+- `skills/dry-run-protection.md` — Rules for keeping Dry Run intact when changing Grandma Visits
+- `skills/supabase-safety.md` — Secrets access, RPC usage, bucket setup, capacity logic
