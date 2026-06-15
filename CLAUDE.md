@@ -37,9 +37,12 @@ repositories/
   descendants_repository.py     ← Grandma: descendants table
   visit_slots_repository.py     ← Grandma: visit_slots table
   grandma_visits_repository.py  ← Grandma: grandma_visits table
+  grandmas_repository.py        ← Grandma: grandmas table
+  managers_repository.py        ← Scoped managers + assignments; get_recipients() resolver (both modules)
 utils/
   dates.py                      ← Hebrew date conversion (pyluach), slot_range_label()
   validation.py                 ← valid_email(), normalize_email(), safe() for HTML escaping
+  constants.py                  ← SERVICE_DRY_RUN / SERVICE_GRANDMA service-type constants
 ```
 
 **Services must never import Streamlit. Repositories contain only DB queries.**
@@ -90,15 +93,25 @@ Session state keys for grandma module:
 - `slot_range_label(start_time)` formats `"HH:MM"` → `"HH:MM - HH:MM"` (1-hour slot)
 - Hebrew date in emails: format via `_format_slot_for_email()` in `grandma_visit_service.py`
 
+## Manager Notifications (both modules)
+
+Managers are scoped per service/entity — there is no global manager list.
+- `managers` = global people; `manager_assignments` = which service/entity each covers
+  (`service_type` ∈ `dry_run` | `grandma`; `entity_id` = NULL for dry_run, grandma id for grandma).
+- All recipients resolve through `managers_repository.get_recipients(supabase, service_type, entity_id)`
+  — booking and cancellation must use the same call. It filters both `is_active` flags and dedups by email.
+- The legacy `visit_managers` table is retained for rollback only and is no longer read by any code.
+- See `skills/scoped-manager-notifications.md`.
+
 ## Dry Run Module
 
-Users authenticate via email lookup in `users` table. Admins manage slots and users at `?mode=admin`. Booking is atomic: Calendar event created first, then DB update with `WHERE is_booked=FALSE`; calendar event deleted on race condition loss.
+Users authenticate via email lookup in `users` table. Admins manage slots and users at `?mode=admin`. Booking is atomic: Calendar event created first, then DB update with `WHERE is_booked=FALSE`; calendar event deleted on race condition loss. After a successful booking, Dry Run managers (`SERVICE_DRY_RUN` scope) are notified — best-effort, never rolling back the booking.
 
 ## Grandma Visits Module
 
 - Visitors identify by **name** (case-insensitive lookup in `descendants` table)
 - Available slots managed by admin in the Grandma tab of `?mode=admin`
-- Booking: atomic slot claim (`visit_slots.is_available` → False) + `grandma_visits` record creation + email to all active `visit_managers`
+- Booking: atomic slot claim (`visit_slots.is_available` → False) + `grandma_visits` record creation + email to that grandma's managers (`SERVICE_GRANDMA` scope, via `get_recipients`)
 - Notes and photo can be added after `slot_end` has passed
 - Photos uploaded to Supabase Storage, path: `grandma-visits/{visit_id}/{timestamp}{ext}`
 
@@ -111,7 +124,8 @@ Users authenticate via email lookup in `users` table. Admins manage slots and us
 ## Hard Rules
 
 - Do not break existing Dry Run flow when editing `app.py` or shared services
-- Do not hardcode manager emails — always fetch from `visit_managers` table
+- Do not hardcode manager emails — resolve via `managers_repository.get_recipients(service_type, entity_id)`; never notify all managers globally
+- Do not read or write the legacy `visit_managers` table — it is kept for rollback only
 - Do not use the Supabase service role key in app code
 - All user data in HTML blocks must be escaped with `safe()`
 - All user data embedded in email HTML bodies must be escaped with `html.escape()`
@@ -123,5 +137,6 @@ Users authenticate via email lookup in `users` table. Admins manage slots and us
 
 - `skills/hebrew-date-and-rtl.md` — Hebrew UI, RTL layout, date formatting, session state cleanup
 - `skills/email-notifications.md` — Email HTML/escaping, plain-text fallback, manager loading, secrets
+- `skills/scoped-manager-notifications.md` — Scoped manager model, get_recipients resolver, assignment UI
 - `skills/dry-run-protection.md` — Rules for keeping Dry Run intact when changing Grandma Visits
 - `skills/supabase-safety.md` — Secrets access, RPC usage, bucket setup, capacity logic

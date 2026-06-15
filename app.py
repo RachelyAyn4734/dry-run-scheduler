@@ -89,7 +89,9 @@ from repositories.grandmas_repository import (
     get_active_grandmas, get_grandma_by_id,
     get_all_grandmas, create_grandma, update_grandma, set_grandma_active,
 )
+from repositories import managers_repository
 from services import booking_service, grandma_visit_service
+from utils.constants import SERVICE_DRY_RUN, SERVICE_GRANDMA
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def _get_mode() -> str:
@@ -673,6 +675,7 @@ def grandma_dashboard_view():
                                 descendant_id=desc_id or None,
                                 secrets=st.secrets,
                                 descendant_name=v.get("descendant_name") or name,
+                                grandma_id=v.get("grandma_id") or grandma_id,
                                 grandma_name=v.get("grandma_name") or grandma_name,
                                 slot_start=v.get("slot_start") or "",
                                 participant_count=int(v.get("participant_count") or 1),
@@ -1060,6 +1063,132 @@ def grandma_gallery_view():
 # ═══════════════════════════════════════════════════════════════
 # GRANDMA ADMIN VIEW  (?mode=grandma_admin)
 # ═══════════════════════════════════════════════════════════════
+def _render_managers_admin(supabase, key_prefix: str):
+    """
+    Shared admin UI for the scoped manager model (managers + manager_assignments).
+
+    Renders four sections:
+      1. Add a manager (global person)
+      2. Dry Run managers  — assignment to the dry_run scope
+      3. Per-grandma managers — assignment per active grandma
+      4. All managers list — global activate/deactivate
+
+    key_prefix keeps Streamlit widget keys unique between the two admin views.
+    """
+    # ── 1. Add a manager (global person) ───────────────────────
+    with st.container(border=True):
+        st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מנהל/ת</p>',
+                    unsafe_allow_html=True)
+        mn1, mn2 = st.columns(2)
+        new_name  = mn1.text_input("שם מנהל/ת", placeholder="שרה לוי",
+                                   key=f"{key_prefix}_new_mgr_name")
+        new_email = mn2.text_input("אימייל מנהל/ת", placeholder="sara@example.com",
+                                   key=f"{key_prefix}_new_mgr_email")
+        if st.button("➕ הוסף מנהל/ת", type="primary", use_container_width=True,
+                     key=f"{key_prefix}_add_mgr"):
+            norm_email = normalize_email(new_email)
+            if not new_name.strip() or not valid_email(norm_email):
+                st.error("נא למלא שם ואימייל תקין.")
+            elif managers_repository.get_manager_by_email(supabase, norm_email):
+                st.warning("מנהל/ת עם אימייל זה כבר קיים/ת.")
+            else:
+                managers_repository.create_manager(supabase, new_name, norm_email)
+                st.success(f"✅ {safe(new_name)} נוסף/ה!")
+                st.rerun()
+
+    active_mgrs = managers_repository.list_managers(supabase, include_inactive=False)
+    mgr_label = {m["id"]: f'{m["name"]} ({m["email"]})' for m in active_mgrs}
+    mgr_ids = [m["id"] for m in active_mgrs]
+
+    # ── 2. Dry Run managers ────────────────────────────────────
+    with st.container(border=True):
+        st.markdown('<p class="sec-title" style="direction:rtl;">🏢 מנהלי Dry Run</p>',
+                    unsafe_allow_html=True)
+        if not active_mgrs:
+            st.info("הוסיפו מנהל/ת תחילה כדי לשייך ל-Dry Run.")
+        else:
+            dry_assignments = managers_repository.list_assignments(supabase, SERVICE_DRY_RUN)
+            dry_by_mgr = {a["manager_id"]: a["id"] for a in dry_assignments}
+            with st.form(f"{key_prefix}_dryrun_form"):
+                sel = st.multiselect(
+                    "מנהלים שיקבלו התראות Dry Run",
+                    options=mgr_ids,
+                    default=[mid for mid in dry_by_mgr if mid in mgr_ids],
+                    format_func=lambda i: mgr_label.get(i, i),
+                    key=f"{key_prefix}_dryrun_ms",
+                )
+                if st.form_submit_button("💾 שמירת מנהלי Dry Run", use_container_width=True):
+                    _save_assignments(supabase, SERVICE_DRY_RUN, None,
+                                      set(sel), dry_by_mgr)
+                    st.success("✅ נשמר.")
+                    st.rerun()
+
+    # ── 3. Per-grandma managers ────────────────────────────────
+    with st.container(border=True):
+        st.markdown('<p class="sec-title" style="direction:rtl;">👵 מנהלים לכל סבתא</p>',
+                    unsafe_allow_html=True)
+        grandmas = get_active_grandmas(supabase)
+        if not grandmas:
+            st.info("אין סבתות פעילות.")
+        elif not active_mgrs:
+            st.info("הוסיפו מנהל/ת תחילה כדי לשייך לסבתא.")
+        else:
+            for g in grandmas:
+                with st.expander(f"👵 {g['name']}"):
+                    g_assignments = managers_repository.list_assignments(
+                        supabase, SERVICE_GRANDMA, g["id"])
+                    g_by_mgr = {a["manager_id"]: a["id"] for a in g_assignments}
+                    with st.form(f"{key_prefix}_gr_form_{g['id']}"):
+                        sel = st.multiselect(
+                            "מנהלים שיקבלו התראות לסבתא זו",
+                            options=mgr_ids,
+                            default=[mid for mid in g_by_mgr if mid in mgr_ids],
+                            format_func=lambda i: mgr_label.get(i, i),
+                            key=f"{key_prefix}_gr_ms_{g['id']}",
+                        )
+                        if st.form_submit_button("💾 שמירה", use_container_width=True):
+                            _save_assignments(supabase, SERVICE_GRANDMA, g["id"],
+                                              set(sel), g_by_mgr)
+                            st.success("✅ נשמר.")
+                            st.rerun()
+
+    # ── 4. All managers list (global activate / deactivate) ────
+    with st.container(border=True):
+        st.markdown('<p class="sec-title" style="direction:rtl;">📧 כל המנהלים</p>',
+                    unsafe_allow_html=True)
+        all_mgrs = managers_repository.list_managers(supabase, include_inactive=True)
+        if not all_mgrs:
+            st.info("אין מנהלים.")
+        else:
+            for m in all_mgrs:
+                mc1, mc2, mc3, mc4 = st.columns([2.5, 3, 1.3, 0.8])
+                mc1.markdown(f"**{safe(m['name'])}**")
+                mc2.caption(m["email"])
+                mc3.markdown("🟢 פעיל/ה" if m["is_active"] else "🔴 לא פעיל/ה")
+                if m["is_active"]:
+                    if mc4.button("🚫", key=f"{key_prefix}_deact_mgr_{m['id']}"):
+                        managers_repository.set_manager_active(supabase, m["id"], False)
+                        st.rerun()
+                else:
+                    if mc4.button("✅", key=f"{key_prefix}_react_mgr_{m['id']}"):
+                        managers_repository.set_manager_active(supabase, m["id"], True)
+                        st.rerun()
+
+
+def _save_assignments(supabase, service_type, entity_id, selected_ids, current_by_mgr):
+    """
+    Reconcile a multiselect against existing assignments.
+    selected_ids: set of manager_ids the admin wants assigned.
+    current_by_mgr: {manager_id: assignment_id} of currently-active assignments.
+    Adds missing ones (idempotent reactivate) and soft-removes deselected ones.
+    """
+    current_ids = set(current_by_mgr)
+    for mgr_id in selected_ids - current_ids:
+        managers_repository.add_assignment(supabase, mgr_id, service_type, entity_id)
+    for mgr_id in current_ids - selected_ids:
+        managers_repository.remove_assignment(supabase, current_by_mgr[mgr_id])
+
+
 def grandma_admin_view():
     st.markdown("""
     <div class="hero-grandma">
@@ -1259,48 +1388,7 @@ def grandma_admin_view():
     # ── TAB 4: Managers ───────────────────────────────────────
     with gtab4:
         try:
-            with st.container(border=True):
-                st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מנהל/ת</p>',
-                            unsafe_allow_html=True)
-                mn1, mn2 = st.columns(2)
-                new_mgr_name  = mn1.text_input("שם מנהל/ת", placeholder="שרה לוי",
-                                               key="ga_new_mgr_name")
-                new_mgr_email = mn2.text_input("אימייל מנהל/ת", placeholder="sara@example.com",
-                                               key="ga_new_mgr_email")
-                if st.button("➕ הוסף מנהל/ת", type="primary", use_container_width=True,
-                             key="ga_add_mgr"):
-                    norm_email = normalize_email(new_mgr_email)
-                    if not new_mgr_name.strip() or not valid_email(norm_email):
-                        st.error("נא למלא שם ואימייל תקין.")
-                    else:
-                        existing = supabase.table("visit_managers").select("id").eq(
-                            "email", norm_email).execute()
-                        if existing.data:
-                            st.warning("מנהל/ת עם אימייל זה כבר קיים/ת.")
-                        else:
-                            supabase.table("visit_managers").insert({
-                                "name": new_mgr_name.strip(),
-                                "email": norm_email,
-                            }).execute()
-                            st.success(f"✅ {safe(new_mgr_name)} נוסף/ה!")
-                            st.rerun()
-
-            with st.container(border=True):
-                st.markdown('<p class="sec-title" style="direction:rtl;">📧 מנהלים פעילים</p>',
-                            unsafe_allow_html=True)
-                managers = grandma_visit_service.get_active_managers(supabase)
-                if not managers:
-                    st.info("אין מנהלים פעילים.")
-                else:
-                    for m in managers:
-                        mc1, mc2, mc3 = st.columns([2.5, 3, 0.8])
-                        mc1.markdown(f"**{safe(m['name'])}**")
-                        mc2.caption(m["email"])
-                        if mc3.button("🗑️", key=f"ga_del_mgr_{m['id']}"):
-                            supabase.table("visit_managers").update(
-                                {"is_active": False}
-                            ).eq("id", m["id"]).execute()
-                            st.rerun()
+            _render_managers_admin(supabase, key_prefix="ga")
         except Exception:
             logger.exception("[GRANDMA_ADMIN] managers tab error")
             st.error("שגיאה בטעינת המנהלים.")
@@ -1758,47 +1846,7 @@ def admin_view():
         # ── Grandma: Managers ─────────────────────────────────
         with gtab4:
             try:
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מנהל/ת</p>',
-                                unsafe_allow_html=True)
-                    mn1, mn2 = st.columns(2)
-                    new_mgr_name  = mn1.text_input("שם מנהל/ת", placeholder="שרה לוי", key="new_mgr_name")
-                    new_mgr_email = mn2.text_input("אימייל מנהל/ת", placeholder="sara@example.com",
-                                                   key="new_mgr_email")
-                    if st.button("➕ הוסף מנהל/ת", type="primary", use_container_width=True,
-                                 key="add_mgr"):
-                        norm_email = normalize_email(new_mgr_email)
-                        if not new_mgr_name.strip() or not valid_email(norm_email):
-                            st.error("נא למלא שם ואימייל תקין.")
-                        else:
-                            existing = supabase.table("visit_managers").select("id").eq(
-                                "email", norm_email).execute()
-                            if existing.data:
-                                st.warning("מנהל/ת עם אימייל זה כבר קיים/ת.")
-                            else:
-                                supabase.table("visit_managers").insert({
-                                    "name": new_mgr_name.strip(),
-                                    "email": norm_email,
-                                }).execute()
-                                st.success(f"✅ {safe(new_mgr_name)} נוסף/ה!")
-                                st.rerun()
-
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">📧 מנהלים פעילים</p>',
-                                unsafe_allow_html=True)
-                    managers = grandma_visit_service.get_active_managers(supabase)
-                    if not managers:
-                        st.info("אין מנהלים פעילים.")
-                    else:
-                        for m in managers:
-                            mc1, mc2, mc3 = st.columns([2.5, 3, 0.8])
-                            mc1.markdown(f"**{safe(m['name'])}**")
-                            mc2.caption(m["email"])
-                            if mc3.button("🗑️", key=f"del_mgr_{m['id']}"):
-                                supabase.table("visit_managers").update(
-                                    {"is_active": False}
-                                ).eq("id", m["id"]).execute()
-                                st.rerun()
+                _render_managers_admin(supabase, key_prefix="adm")
             except Exception:
                 logger.exception("[ADMIN] Grandma managers tab error")
                 st.error("שגיאה בטעינת המנהלים.")

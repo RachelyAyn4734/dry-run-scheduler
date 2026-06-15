@@ -180,78 +180,120 @@ class TestGrandmaVisitsRepository(unittest.TestCase):
 # ═══════════════════════════════════════════════════════════════
 
 class TestGrandmaVisitService(unittest.TestCase):
+    """
+    Booking/cancellation go through the book_visit_slot / cancel_visit_booking RPCs,
+    and notify recipients resolved by managers_repository.get_recipients() scoped to
+    the visit's grandma (SERVICE_GRANDMA, grandma_id).
+    """
 
     _SLOT_START = "2026-06-10T10:00:00+00:00"
     _SLOT_END   = "2026-06-10T11:00:00+00:00"
+    _GRANDMA_ID = "grandma-uuid"
 
     def _book(self, **patch_overrides):
-        """Call book_visit with sensible defaults and return the result."""
+        """Call book_visit with sensible defaults and return (result, mock_mail, mock_recip)."""
         defaults = {
-            "atomic":   True,
-            "create":   {"id": "visit-uuid"},
-            "managers": [],
-            "mail":     True,
+            "rpc_data":   {"success": True, "visit_id": "visit-uuid"},
+            "recipients": [],
+            "mail":       True,
+            "grandma_id": self._GRANDMA_ID,
         }
         defaults.update(patch_overrides)
         sb = MagicMock()
-        with patch("services.grandma_visit_service.atomic_book_visit_slot",
-                   return_value=defaults["atomic"]), \
-             patch("services.grandma_visit_service.create_visit",
-                   return_value=defaults["create"]), \
-             patch("services.grandma_visit_service.get_active_managers",
-                   return_value=defaults["managers"]), \
-             patch("services.grandma_visit_service.email_service.send_visit_notification",
+        sb.rpc.return_value.execute.return_value.data = defaults["rpc_data"]
+        with patch("services.grandma_visit_service.managers_repository.get_recipients",
+                   return_value=defaults["recipients"]) as mock_recip, \
+             patch("services.grandma_visit_service.email_service.send_visit_notification_v2",
                    return_value=defaults["mail"]) as mock_mail:
             from services.grandma_visit_service import book_visit
             result = book_visit(sb, {}, "slot-id",
                                 self._SLOT_START, self._SLOT_END,
-                                "desc-id", "רחל")
-        return result, mock_mail
+                                "desc-id", "רחל",
+                                grandma_id=defaults["grandma_id"],
+                                grandma_name="סבתא שושי")
+        return result, mock_mail, mock_recip
 
     def test_fails_immediately_when_slot_already_taken(self):
-        result, _ = self._book(atomic=False)
+        result, _, _ = self._book(rpc_data={"success": False, "reason": "slot_not_available"})
         self.assertFalse(result["success"])
         self.assertIsNone(result["visit_id"])
 
+    def test_blocked_when_grandma_id_missing(self):
+        """book_visit without grandma_id must fail gracefully, not call the RPC."""
+        result, mock_mail, _ = self._book(grandma_id=None)
+        self.assertFalse(result["success"])
+        mock_mail.assert_not_called()
+
     def test_succeeds_and_returns_visit_id(self):
-        result, _ = self._book()
+        result, _, _ = self._book()
         self.assertTrue(result["success"])
         self.assertEqual(result["visit_id"], "visit-uuid")
 
+    def test_recipients_resolved_scoped_to_grandma(self):
+        """Recipients must be resolved for SERVICE_GRANDMA + this grandma's id."""
+        from utils.constants import SERVICE_GRANDMA
+        _, _, mock_recip = self._book()
+        args = mock_recip.call_args[0]
+        # (supabase, service_type, entity_id)
+        self.assertEqual(args[1], SERVICE_GRANDMA)
+        self.assertEqual(args[2], self._GRANDMA_ID)
+
     def test_no_managers_means_mail_ok_is_true(self):
-        """Zero managers → no emails needed → mail_ok=True."""
-        result, mock_mail = self._book(managers=[])
+        """Zero recipients → no emails needed → mail_ok=True."""
+        result, mock_mail, _ = self._book(recipients=[])
         self.assertTrue(result["mail_ok"])
         mock_mail.assert_not_called()
 
-    def test_sends_email_to_every_active_manager(self):
-        managers = [
+    def test_sends_email_to_every_recipient(self):
+        recipients = [
             {"name": "מנהלת א", "email": "mgr1@test.com"},
             {"name": "מנהל ב",  "email": "mgr2@test.com"},
         ]
-        result, mock_mail = self._book(managers=managers)
+        result, mock_mail, _ = self._book(recipients=recipients)
         self.assertTrue(result["success"])
         self.assertEqual(mock_mail.call_count, 2)
 
     def test_mail_ok_false_when_at_least_one_send_fails(self):
-        managers = [{"name": "מנהלת", "email": "mgr@test.com"}]
-        result, _ = self._book(managers=managers, mail=False)
+        recipients = [{"name": "מנהלת", "email": "mgr@test.com"}]
+        result, _, _ = self._book(recipients=recipients, mail=False)
         self.assertFalse(result["mail_ok"])
 
     def test_email_contains_visitor_name(self):
-        managers = [{"name": "מנהלת", "email": "mgr@test.com"}]
-        _, mock_mail = self._book(managers=managers)
+        recipients = [{"name": "מנהלת", "email": "mgr@test.com"}]
+        _, mock_mail, _ = self._book(recipients=recipients)
         kwargs = mock_mail.call_args[1]
         self.assertEqual(kwargs["visitor_name"], "רחל")
 
-    def test_cancel_releases_slot_and_cancels_visit(self):
+    def test_cancel_uses_rpc(self):
         sb = MagicMock()
-        with patch("services.grandma_visit_service.release_visit_slot") as mock_release, \
-             patch("services.grandma_visit_service.cancel_visit") as mock_cancel:
+        sb.rpc.return_value.execute.return_value.data = {"success": True}
+        from services.grandma_visit_service import cancel_booked_visit
+        result = cancel_booked_visit(sb, "v-uuid", "s-uuid", descendant_id="desc-id")
+        sb.rpc.assert_called_once_with(
+            "cancel_visit_booking",
+            {"p_visit_id": "v-uuid", "p_descendant_id": "desc-id"},
+        )
+        self.assertTrue(result["success"])
+
+    def test_cancel_emails_scoped_to_grandma(self):
+        """Cancellation emails resolve recipients for the visit's grandma only."""
+        from utils.constants import SERVICE_GRANDMA
+        sb = MagicMock()
+        sb.rpc.return_value.execute.return_value.data = {"success": True}
+        with patch("services.grandma_visit_service.managers_repository.get_recipients",
+                   return_value=[]) as mock_recip, \
+             patch("services.grandma_visit_service.email_service.send_visit_cancellation",
+                   return_value=True):
             from services.grandma_visit_service import cancel_booked_visit
-            cancel_booked_visit(sb, "v-uuid", "s-uuid")
-        mock_release.assert_called_once_with(sb, "s-uuid")
-        mock_cancel.assert_called_once_with(sb, "v-uuid")
+            cancel_booked_visit(
+                sb, "v-uuid", "s-uuid", descendant_id=None,
+                secrets={"SMTP_SERVER": "smtp.example.com"}, descendant_name="רחל",
+                grandma_id=self._GRANDMA_ID, grandma_name="סבתא שושי",
+                slot_start=self._SLOT_START,
+            )
+        args = mock_recip.call_args[0]
+        self.assertEqual(args[1], SERVICE_GRANDMA)
+        self.assertEqual(args[2], self._GRANDMA_ID)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -279,6 +321,19 @@ class TestEmailService(unittest.TestCase):
             user_email="user@example.com",
             user_name="רחל",
             date_str="2026-06-10",
+            time_str="10:00",
+        )
+        self.assertFalse(result)
+
+    def test_dry_run_notification_returns_false_without_smtp(self):
+        from services.email_service import send_dry_run_notification
+        result = send_dry_run_notification(
+            secrets={},
+            manager_email="mgr@example.com",
+            manager_name="מנהל Dry Run",
+            booker_name="רחל",
+            booker_email="rachel@example.com",
+            date_str="10/06/2026",
             time_str="10:00",
         )
         self.assertFalse(result)
@@ -356,20 +411,24 @@ class TestDateFormatting(unittest.TestCase):
 class TestSlotFiltering(unittest.TestCase):
 
     def test_fetch_available_slots_filters_by_is_available(self):
-        """The is_available=True filter must be applied."""
+        """Both is_active (first eq) and is_available (second eq) filters must apply."""
         from repositories.visit_slots_repository import fetch_available_visit_slots
         sb = _sb_returning([])
         fetch_available_visit_slots(sb)
-        eq_call = sb.table.return_value.select.return_value.eq.call_args
-        self.assertEqual(eq_call[0][0], "is_available")
-        self.assertTrue(eq_call[0][1])
+        first_eq = sb.table.return_value.select.return_value.eq.call_args
+        second_eq = sb.table.return_value.select.return_value.eq.return_value.eq.call_args
+        self.assertEqual(first_eq[0][0], "is_active")
+        self.assertTrue(first_eq[0][1])
+        self.assertEqual(second_eq[0][0], "is_available")
+        self.assertTrue(second_eq[0][1])
 
     def test_fetch_available_slots_filters_future_only(self):
-        """A .gt('slot_start', ...) filter must be applied for future-only query."""
+        """A .gt('slot_start', ...) filter must be applied (after the two eq filters)."""
         from repositories.visit_slots_repository import fetch_available_visit_slots
         sb = _sb_returning([])
         fetch_available_visit_slots(sb)
-        gt_call = sb.table.return_value.select.return_value.eq.return_value.gt.call_args
+        gt_call = (sb.table.return_value.select.return_value
+                   .eq.return_value.eq.return_value.gt.call_args)
         self.assertEqual(gt_call[0][0], "slot_start")
 
     def test_get_past_visits_uses_lte_on_slot_end(self):

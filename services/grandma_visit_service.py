@@ -8,7 +8,9 @@ from datetime import datetime
 import pytz
 from supabase import Client
 
+from repositories import managers_repository
 from services import email_service
+from utils.constants import SERVICE_GRANDMA
 from utils.dates import to_heb_short
 
 logger = logging.getLogger(__name__)
@@ -52,13 +54,6 @@ _GENERIC_ERROR = "אירעה שגיאה. אנא נסי שוב מאוחר יות�
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
-
-def get_active_managers(supabase: Client) -> list:
-    return (
-        supabase.table("visit_managers").select("*")
-        .eq("is_active", True).execute().data or []
-    )
-
 
 def _format_slot_for_email(slot_start_iso: str) -> tuple[str, str, str]:
     """Returns (date_str dd/MM/yyyy, time_str HH:mm, heb_date_str)."""
@@ -132,9 +127,9 @@ def book_visit(
     visit_id = str(data["visit_id"])
     date_str, time_str, heb_date_str = _format_slot_for_email(slot_start)
 
-    managers = get_active_managers(supabase)
+    recipients = managers_repository.get_recipients(supabase, SERVICE_GRANDMA, grandma_id)
     mail_ok = True
-    for manager in managers:
+    for manager in recipients:
         ok = email_service.send_visit_notification_v2(
             secrets,
             manager_email=manager["email"],
@@ -165,6 +160,7 @@ def cancel_booked_visit(
     *,
     secrets=None,
     descendant_name: str = "",
+    grandma_id: str | None = None,
     grandma_name: str = "",
     slot_start: str = "",
     participant_count: int = 1,
@@ -176,6 +172,8 @@ def cancel_booked_visit(
     descendant_id: pass visitor UUID to enforce ownership; None skips the check (admin path).
 
     Pass secrets + visit details (keyword-only) to trigger manager cancellation emails.
+    grandma_id scopes the cancellation notification to that grandma's managers only;
+    without it, no cancellation emails are sent (booking is still cancelled).
     Email failure never rolls back the cancellation.
 
     Returns: {success, error_msg}
@@ -200,11 +198,11 @@ def cancel_booked_visit(
 
     logger.info("[GRANDMA] Cancelled visit=%s descendant=%s", visit_id, descendant_id)
 
-    if secrets and slot_start:
+    if secrets and slot_start and grandma_id:
         try:
             date_str, time_str, heb_date_str = _format_slot_for_email(slot_start)
-            managers = get_active_managers(supabase)
-            for manager in managers:
+            recipients = managers_repository.get_recipients(supabase, SERVICE_GRANDMA, grandma_id)
+            for manager in recipients:
                 ok = email_service.send_visit_cancellation(
                     secrets,
                     manager_email=manager["email"],
