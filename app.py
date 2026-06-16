@@ -1300,6 +1300,8 @@ def grandma_admin_view():
     # ── TAB 1: Slots ──────────────────────────────────────────
     with gtab1:
         try:
+            # Deploy/version marker — confirms this exact block is the rendered screen.
+            st.caption("version: grandma-slots-screen-v4")
             # Screen-scoped RTL polish: selectbox value + horizontal radio filter.
             st.markdown("""
             <style>
@@ -1383,7 +1385,7 @@ def grandma_admin_view():
                                 st.session_state["ga_slot_added"] = True
                                 st.rerun()
                             else:
-                                st.warning("מועד זה כבר קיים לסבתא זו.")
+                                st.warning("המועד כבר קיים לסבתא הזו")
 
             with st.container(border=True):
                 # Single RTL filter row: title on the right, options right→left beside it.
