@@ -1123,6 +1123,9 @@ def _render_managers_admin(supabase, key_prefix: str):
     with st.container(border=True):
         st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מנהל/ת</p>',
                     unsafe_allow_html=True)
+        # Success message shown once after a successful add + field clear (see below).
+        if st.session_state.pop(f"{key_prefix}_mgr_added", False):
+            st.success("המנהל/ת התווסף/ה בהצלחה")
         mn1, mn2 = st.columns(2)
         new_name  = mn1.text_input("שם מנהל/ת", placeholder="שרה לוי",
                                    key=f"{key_prefix}_new_mgr_name")
@@ -1137,14 +1140,15 @@ def _render_managers_admin(supabase, key_prefix: str):
                 st.warning("מנהל/ת עם אימייל זה כבר קיים/ת.")
             else:
                 managers_repository.create_manager(supabase, new_name, norm_email)
-                st.success(f"✅ {safe(new_name)} נוסף/ה!")
+                # Flag success + clear inputs, then rerun so the fields render empty.
+                st.session_state[f"{key_prefix}_mgr_added"] = True
+                st.session_state.pop(f"{key_prefix}_new_mgr_name", None)
+                st.session_state.pop(f"{key_prefix}_new_mgr_email", None)
                 st.rerun()
 
     active_mgrs = managers_repository.list_managers(supabase, include_inactive=False)
-    mgr_label = {m["id"]: f'{m["name"]} ({m["email"]})' for m in active_mgrs}
-    mgr_ids = [m["id"] for m in active_mgrs]
 
-    # ── 2. Dry Run managers ────────────────────────────────────
+    # ── 2. Dry Run managers (checkboxes — clean RTL, no LTR chips) ──
     with st.container(border=True):
         st.markdown('<p class="sec-title" style="direction:rtl;">🏢 מנהלי Dry Run</p>',
                     unsafe_allow_html=True)
@@ -1154,20 +1158,25 @@ def _render_managers_admin(supabase, key_prefix: str):
             dry_assignments = managers_repository.list_assignments(supabase, SERVICE_DRY_RUN)
             dry_by_mgr = {a["manager_id"]: a["id"] for a in dry_assignments}
             with st.form(f"{key_prefix}_dryrun_form"):
-                sel = st.multiselect(
-                    "מנהלים שיקבלו התראות Dry Run",
-                    options=mgr_ids,
-                    default=[mid for mid in dry_by_mgr if mid in mgr_ids],
-                    format_func=lambda i: mgr_label.get(i, i),
-                    key=f"{key_prefix}_dryrun_ms",
+                st.markdown(
+                    '<p style="direction:rtl;text-align:right;color:#6b7280;">'
+                    'סמני מנהלים שיקבלו התראות על פגישות Dry Run:</p>',
+                    unsafe_allow_html=True,
                 )
+                selected = set()
+                for m in active_mgrs:
+                    if st.checkbox(
+                        f"{m['name']} — {m['email']}",
+                        value=(m["id"] in dry_by_mgr),
+                        key=f"{key_prefix}_dry_chk_{m['id']}",
+                    ):
+                        selected.add(m["id"])
                 if st.form_submit_button("💾 שמירת מנהלי Dry Run", use_container_width=True):
-                    _save_assignments(supabase, SERVICE_DRY_RUN, None,
-                                      set(sel), dry_by_mgr)
-                    st.success("✅ נשמר.")
+                    _save_assignments(supabase, SERVICE_DRY_RUN, None, selected, dry_by_mgr)
+                    st.success("נשמר.")
                     st.rerun()
 
-    # ── 3. Per-grandma managers ────────────────────────────────
+    # ── 3. Per-grandma managers (checkboxes per grandma) ───────
     with st.container(border=True):
         st.markdown('<p class="sec-title" style="direction:rtl;">👵 מנהלים לכל סבתא</p>',
                     unsafe_allow_html=True)
@@ -1183,20 +1192,26 @@ def _render_managers_admin(supabase, key_prefix: str):
                         supabase, SERVICE_GRANDMA, g["id"])
                     g_by_mgr = {a["manager_id"]: a["id"] for a in g_assignments}
                     with st.form(f"{key_prefix}_gr_form_{g['id']}"):
-                        sel = st.multiselect(
-                            "מנהלים שיקבלו התראות לסבתא זו",
-                            options=mgr_ids,
-                            default=[mid for mid in g_by_mgr if mid in mgr_ids],
-                            format_func=lambda i: mgr_label.get(i, i),
-                            key=f"{key_prefix}_gr_ms_{g['id']}",
+                        st.markdown(
+                            '<p style="direction:rtl;text-align:right;color:#6b7280;">'
+                            'סמני מנהלים שיקבלו התראות לסבתא זו:</p>',
+                            unsafe_allow_html=True,
                         )
+                        selected = set()
+                        for m in active_mgrs:
+                            if st.checkbox(
+                                f"{m['name']} — {m['email']}",
+                                value=(m["id"] in g_by_mgr),
+                                key=f"{key_prefix}_gr_chk_{g['id']}_{m['id']}",
+                            ):
+                                selected.add(m["id"])
                         if st.form_submit_button("💾 שמירה", use_container_width=True):
                             _save_assignments(supabase, SERVICE_GRANDMA, g["id"],
-                                              set(sel), g_by_mgr)
-                            st.success("✅ נשמר.")
+                                              selected, g_by_mgr)
+                            st.success("נשמר.")
                             st.rerun()
 
-    # ── 4. All managers list (global activate / deactivate) ────
+    # ── 4. All managers list — RTL order: שם · אימייל · סטטוס · פעולה ──
     with st.container(border=True):
         st.markdown('<p class="sec-title" style="direction:rtl;">📧 כל המנהלים</p>',
                     unsafe_allow_html=True)
@@ -1204,17 +1219,34 @@ def _render_managers_admin(supabase, key_prefix: str):
         if not all_mgrs:
             st.info("אין מנהלים.")
         else:
+            def _rtl_cell(text, *, bold=False, color="#111827"):
+                weight = "700" if bold else "400"
+                return (f'<div style="direction:rtl;text-align:right;'
+                        f'font-weight:{weight};color:{color};">{text}</div>')
+
+            # Columns left→right = action, status, email, name → so name sits on the right.
+            ratios = [1.1, 1.2, 3, 2.5]
+            h_act, h_status, h_email, h_name = st.columns(ratios)
+            h_name.markdown(_rtl_cell("שם", bold=True), unsafe_allow_html=True)
+            h_email.markdown(_rtl_cell("אימייל", bold=True), unsafe_allow_html=True)
+            h_status.markdown(_rtl_cell("סטטוס", bold=True), unsafe_allow_html=True)
+            h_act.markdown(_rtl_cell("פעולה", bold=True), unsafe_allow_html=True)
+
             for m in all_mgrs:
-                mc1, mc2, mc3, mc4 = st.columns([2.5, 3, 1.3, 0.8])
-                mc1.markdown(f"**{safe(m['name'])}**")
-                mc2.caption(m["email"])
-                mc3.markdown("🟢 פעיל/ה" if m["is_active"] else "🔴 לא פעיל/ה")
+                c_act, c_status, c_email, c_name = st.columns(ratios)
+                c_name.markdown(_rtl_cell(safe(m["name"]), bold=True), unsafe_allow_html=True)
+                c_email.markdown(_rtl_cell(safe(m["email"]), color="#6b7280"),
+                                 unsafe_allow_html=True)
                 if m["is_active"]:
-                    if mc4.button("🚫", key=f"{key_prefix}_deact_mgr_{m['id']}"):
+                    c_status.markdown(_rtl_cell("פעיל", color="#065f46"), unsafe_allow_html=True)
+                    if c_act.button("השבת", key=f"{key_prefix}_deact_mgr_{m['id']}",
+                                    use_container_width=True):
                         managers_repository.set_manager_active(supabase, m["id"], False)
                         st.rerun()
                 else:
-                    if mc4.button("✅", key=f"{key_prefix}_react_mgr_{m['id']}"):
+                    c_status.markdown(_rtl_cell("לא פעיל", color="#991b1b"), unsafe_allow_html=True)
+                    if c_act.button("הפעל", key=f"{key_prefix}_react_mgr_{m['id']}",
+                                    use_container_width=True):
                         managers_repository.set_manager_active(supabase, m["id"], True)
                         st.rerun()
 
@@ -1284,13 +1316,21 @@ def grandma_admin_view():
 
                     gc1, gc2 = st.columns(2)
                     today_il = now_il().date()
-                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
-                    # gc1 = left column (שעה), gc2 = right column (תאריך) — RTL natural order
-                    g_time = gc1.selectbox("שעה", all_hours, key="ga_slot_time",
-                                           format_func=slot_range_label)
+                    # gc2 = right column (תאריך), gc1 = left column (שעה) — RTL natural order.
+                    # Build date first so past hours can be hidden when the date is today.
                     g_date = gc2.date_input("תאריך", value=today_il,
                                             min_value=today_il, format="DD/MM/YYYY",
                                             key="ga_slot_date")
+                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
+                    if g_date == today_il:
+                        current_hour = now_il().hour
+                        all_hours = [t for t in all_hours if int(t[:2]) > current_hour]
+                    if not all_hours:
+                        gc1.warning("אין שעות פנויות מאוחר יותר היום.")
+                        g_time = None
+                    else:
+                        g_time = gc1.selectbox("שעה", all_hours, key="ga_slot_time",
+                                               format_func=slot_range_label)
 
                     cp1, cp2 = st.columns(2)
                     max_parts = cp1.number_input(
@@ -1303,32 +1343,54 @@ def grandma_admin_view():
 
                     if st.button("💾 הוסף מועד", type="primary", use_container_width=True,
                                  key="ga_add_slot"):
-                        h_val, m_val = int(g_time[:2]), int(g_time[3:5])
-                        slot_start_dt = IL_TZ.localize(
-                            datetime(g_date.year, g_date.month, g_date.day, h_val, m_val)
-                        )
-                        slot_end_dt = slot_start_dt + timedelta(hours=1)
-                        if add_visit_slot(
-                            supabase, slot_start_dt, slot_end_dt,
-                            grandma_id=sel_gr_id,
-                            max_participants=int(max_parts),
-                            allows_shared_visits=allow_shared,
-                        ):
-                            st.success("✅ מועד נוסף!")
-                            st.rerun()
+                        if not g_time:
+                            st.warning("נא לבחור שעה.")
                         else:
-                            st.warning("מועד זה כבר קיים לסבתא זו.")
+                            h_val, m_val = int(g_time[:2]), int(g_time[3:5])
+                            slot_start_dt = IL_TZ.localize(
+                                datetime(g_date.year, g_date.month, g_date.day, h_val, m_val)
+                            )
+                            slot_end_dt = slot_start_dt + timedelta(hours=1)
+                            if add_visit_slot(
+                                supabase, slot_start_dt, slot_end_dt,
+                                grandma_id=sel_gr_id,
+                                max_participants=int(max_parts),
+                                allows_shared_visits=allow_shared,
+                            ):
+                                st.success("✅ מועד נוסף!")
+                                st.rerun()
+                            else:
+                                st.warning("מועד זה כבר קיים לסבתא זו.")
 
             with st.container(border=True):
-                st.markdown('<p class="sec-title" style="direction:rtl;">📋 כל המועדים</p>',
+                st.markdown('<p class="sec-title" style="direction:rtl;">📋 המועדים</p>',
                             unsafe_allow_html=True)
+                # Display filter (no data is deleted — filtering only).
+                slot_filter = st.radio(
+                    "סינון מועדים",
+                    ["עתידיים", "היום", "היסטוריה"],
+                    horizontal=True, key="ga_slot_filter", label_visibility="collapsed",
+                )
                 # Build grandma id→name map for the listing
                 all_gr_map = {g["id"]: g["name"] for g in get_all_grandmas(supabase)}
                 all_vslots = fetch_all_visit_slots(supabase)
-                if not all_vslots:
-                    st.info("אין מועדים.")
+                now_dt = now_il()
+                today_d = now_dt.date()
+
+                def _keep_slot(s):
+                    start = _slot_dt(s["slot_start"])
+                    end = _slot_dt(s["slot_end"])
+                    if slot_filter == "עתידיים":
+                        return end > now_dt
+                    if slot_filter == "היום":
+                        return start.date() == today_d
+                    return end <= now_dt  # היסטוריה
+
+                vslots = [s for s in all_vslots if _keep_slot(s)]
+                if not vslots:
+                    st.info("אין מועדים להצגה.")
                 else:
-                    for s in all_vslots:
+                    for s in vslots:
                         dt = _slot_dt(s["slot_start"])
                         avail = "🟢 פנוי" if s["is_available"] else "🔴 תפוס"
                         badge = "b-avail" if s["is_available"] else "b-booked"
@@ -1385,6 +1447,8 @@ def grandma_admin_view():
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת נכד/ה</p>',
                             unsafe_allow_html=True)
+                if st.session_state.pop("ga_desc_added", False):
+                    st.success("הנכד/ה התווסף/ה בהצלחה")
                 dn1, dn2, dn3 = st.columns(3)
                 new_desc_name  = dn1.text_input("שם מלא", placeholder="רחל כהן",
                                                 key="ga_new_desc_name")
@@ -1401,7 +1465,9 @@ def grandma_admin_view():
                     else:
                         create_descendant(supabase, new_desc_name,
                                           new_desc_phone, new_desc_email)
-                        st.success(f"✅ {safe(new_desc_name)} נוסף/ה!")
+                        st.session_state["ga_desc_added"] = True
+                        for _k in ("ga_new_desc_name", "ga_new_desc_phone", "ga_new_desc_email"):
+                            st.session_state.pop(_k, None)
                         st.rerun()
 
             with st.container(border=True):
@@ -1443,6 +1509,8 @@ def grandma_admin_view():
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת סבתא</p>',
                             unsafe_allow_html=True)
+                if st.session_state.pop("ga_gr_added", False):
+                    st.success("הסבתא התווספה בהצלחה")
                 gr1, gr2, gr3 = st.columns(3)
                 new_gr_name  = gr1.text_input("שם", placeholder="סבתא שושי",
                                               key="ga_new_gr_name")
@@ -1458,7 +1526,9 @@ def grandma_admin_view():
                         st.error("נא להכניס שם.")
                     else:
                         create_grandma(supabase, new_gr_name, new_gr_photo, new_gr_desc)
-                        st.success(f"✅ {safe(new_gr_name)} נוספה!")
+                        st.session_state["ga_gr_added"] = True
+                        for _k in ("ga_new_gr_name", "ga_new_gr_photo", "ga_new_gr_desc"):
+                            st.session_state.pop(_k, None)
                         st.rerun()
 
             with st.container(border=True):
@@ -1757,143 +1827,23 @@ def admin_view():
     with tab4:
         st.markdown('<p class="sec-title" style="direction:rtl;">🌸 ניהול ביקורי סבתא</p>',
                     unsafe_allow_html=True)
-        gtab1, gtab2, gtab3, gtab4 = st.tabs([
-            "📅 מועדים", "📋 ביקורים", "👥 נכדים/ות", "📧 מנהלים"
-        ])
-
-        # ── Grandma: Slots ────────────────────────────────────
-        with gtab1:
-            try:
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מועד ביקור</p>',
-                                unsafe_allow_html=True)
-                    gc1, gc2 = st.columns(2)
-                    today_il = now_il().date()
-                    g_date = gc1.date_input("תאריך", value=today_il,
-                                            min_value=today_il, format="DD/MM/YYYY",
-                                            key="g_slot_date")
-                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
-                    g_time = gc2.selectbox("שעה", all_hours, key="g_slot_time",
-                                           format_func=slot_range_label)
-                    if st.button("💾 הוסף מועד", type="primary", use_container_width=True,
-                                 key="g_add_slot"):
-                        h_val, m_val = int(g_time[:2]), int(g_time[3:5])
-                        slot_start_dt = IL_TZ.localize(
-                            datetime(g_date.year, g_date.month, g_date.day, h_val, m_val)
-                        )
-                        slot_end_dt = slot_start_dt + timedelta(hours=1)
-                        if add_visit_slot(supabase, slot_start_dt, slot_end_dt):
-                            st.success("✅ מועד נוסף!")
-                            st.rerun()
-                        else:
-                            st.warning("מועד זה כבר קיים.")
-
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">📋 כל המועדים</p>',
-                                unsafe_allow_html=True)
-                    all_vslots = fetch_all_visit_slots(supabase)
-                    if not all_vslots:
-                        st.info("אין מועדים.")
-                    else:
-                        for s in all_vslots:
-                            dt = _slot_dt(s["slot_start"])
-                            avail = "🟢 פנוי" if s["is_available"] else "🔴 תפוס"
-                            badge = "b-avail" if s["is_available"] else "b-booked"
-                            sc1, sc2, sc3 = st.columns([3, 1.5, 0.7])
-                            sc1.markdown(f"**📅 {safe(dt.strftime('%d/%m/%Y %H:%M'))}**")
-                            sc2.markdown(f'<span class="badge {badge}">{avail}</span>',
-                                         unsafe_allow_html=True)
-                            if sc3.button("🗑️", key=f"del_vs_{s['id']}"):
-                                delete_visit_slot(supabase, s["id"])
-                                st.rerun()
-            except Exception:
-                logger.exception("[ADMIN] Grandma slots tab error")
-                st.error("שגיאה בטעינת המועדים.")
-
-        # ── Grandma: Bookings ─────────────────────────────────
-        with gtab2:
-            try:
-                st.markdown('<p class="sec-title" style="direction:rtl;">📋 כל הביקורים</p>',
-                            unsafe_allow_html=True)
-                all_gvisits = get_all_visits(supabase)
-                if not all_gvisits:
-                    st.info("אין ביקורים רשומים.")
-                else:
-                    status_map = {
-                        "scheduled": "🟡 מתוכנן",
-                        "completed": "✅ הושלם",
-                        "cancelled": "❌ בוטל",
-                    }
-                    for v in all_gvisits:
-                        dt = _slot_dt(v["slot_start"])
-                        heb = to_heb_short(dt.date())
-                        status_lbl = status_map.get(v["status"], v["status"])
-                        st.markdown(f"""
-                        <div class="bov-card">
-                            <div class="slot-info">👤 {safe(v['descendant_name'])} &nbsp;|&nbsp; 📅 {safe(dt.strftime('%d/%m/%Y %H:%M'))}</div>
-                            <div class="heb-info">{safe(heb)}</div>
-                            <div class="user-info">{status_lbl}</div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    st.markdown(f"**סה״כ: {len(all_gvisits)} ביקורים**")
-            except Exception:
-                logger.exception("[ADMIN] Grandma bookings tab error")
-                st.error("שגיאה בטעינת הביקורים.")
-
-        # ── Grandma: Descendants ──────────────────────────────
-        with gtab3:
-            try:
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת נכד/ה</p>',
-                                unsafe_allow_html=True)
-                    dn1, dn2, dn3 = st.columns(3)
-                    new_desc_name  = dn1.text_input("שם מלא", placeholder="רחל כהן", key="new_desc_name")
-                    new_desc_phone = dn2.text_input("טלפון", placeholder="050-...", key="new_desc_phone")
-                    new_desc_email = dn3.text_input("אימייל (אופציונלי)", placeholder="rachel@...", key="new_desc_email")
-                    if st.button("➕ הוסף נכד/ה", type="primary", use_container_width=True,
-                                 key="add_desc"):
-                        if not new_desc_name.strip():
-                            st.error("נא להכניס שם.")
-                        elif get_descendant_by_name(supabase, new_desc_name):
-                            st.warning("נכד/ה עם שם זה כבר קיים/ת במערכת.")
-                        else:
-                            create_descendant(supabase, new_desc_name,
-                                              new_desc_phone, new_desc_email)
-                            st.success(f"✅ {safe(new_desc_name)} נוסף/ה!")
-                            st.rerun()
-
-                with st.container(border=True):
-                    st.markdown('<p class="sec-title" style="direction:rtl;">👥 רשימת נכדים/ות</p>',
-                                unsafe_allow_html=True)
-                    all_desc = get_all_descendants(supabase)
-                    if not all_desc:
-                        st.info("אין נכדים/ות רשומים/ות.")
-                    else:
-                        for d in all_desc:
-                            dc1, dc2, dc3, dc4 = st.columns([2.5, 2, 2, 0.8])
-                            dc1.markdown(f"**{safe(d['name'])}**")
-                            dc2.caption(d.get("phone") or "—")
-                            active_badge = "🟢 פעיל/ה" if d["is_active"] else "🔴 לא פעיל/ה"
-                            dc3.markdown(active_badge)
-                            if d["is_active"]:
-                                if dc4.button("🚫", key=f"deact_{d['id']}"):
-                                    deactivate_descendant(supabase, d["id"])
-                                    st.rerun()
-                            else:
-                                if dc4.button("✅", key=f"react_{d['id']}"):
-                                    reactivate_descendant(supabase, d["id"])
-                                    st.rerun()
-            except Exception:
-                logger.exception("[ADMIN] Grandma descendants tab error")
-                st.error("שגיאה בטעינת רשימת הנכדים.")
-
-        # ── Grandma: Managers ─────────────────────────────────
-        with gtab4:
-            try:
-                _render_managers_admin(supabase, key_prefix="adm")
-            except Exception:
-                logger.exception("[ADMIN] Grandma managers tab error")
-                st.error("שגיאה בטעינת המנהלים.")
+        st.info(
+            "ניהול מועדים, ביקורים, נכדים/ות, סבתות וגלריה מתבצע במסך הייעודי "
+            "לניהול ביקורי סבתא."
+        )
+        st.link_button(
+            "מעבר למסך ניהול ביקורי סבתא ←",
+            "?mode=grandma_admin",
+            use_container_width=True,
+        )
+        st.divider()
+        st.markdown('<p class="sec-title" style="direction:rtl;">📧 מנהלים</p>',
+                    unsafe_allow_html=True)
+        try:
+            _render_managers_admin(supabase, key_prefix="adm")
+        except Exception:
+            logger.exception("[ADMIN] Grandma managers error")
+            st.error("שגיאה בטעינת המנהלים.")
 
     st.divider()
     if st.button("🚪 יציאה", use_container_width=True):
