@@ -69,6 +69,52 @@ Widgets that require explicit handling:
 - **Never** let placeholder/label text cover the typed value. If a floating label would
   overlap, drop the placeholder and use a clear label above the input.
 
+### Clearing form inputs after a successful submit
+
+Streamlit will **not** auto-clear keyed inputs, and you cannot assign a widget's
+`session_state` value after the widget is built in the same run. Use the
+flag + pop + rerun pattern:
+
+```python
+# At the TOP of the form block (before the inputs), show the one-shot success:
+if st.session_state.pop("my_form_added", False):
+    st.success("נוסף בהצלחה")
+
+name = st.text_input("שם", key="my_form_name")   # no value=  →  empty after clear
+...
+if st.button("הוסף"):
+    if ok:
+        create_thing(...)
+        st.session_state["my_form_added"] = True      # success flag for next run
+        st.session_state.pop("my_form_name", None)     # clear the field key(s)
+        st.rerun()                                     # re-render with empty inputs
+```
+
+Show **one** success message (not on every rerun) and never leave the typed
+values stuck in the fields after a successful add.
+
+### RTL tables / column lists
+
+Streamlit `st.columns` always renders left→right in the DOM. To make a row read
+naturally in Hebrew, **put the most important cell in the last (rightmost) column**.
+For admin lists the order must be (right→left): **שם → אימייל → סטטוס → פעולה**, i.e.
+create columns as `action, status, email, name` and right-align each cell's content
+(`direction:rtl; text-align:right`). Add a matching header row with `שם / אימייל /
+סטטוס / פעולה`. Use Hebrew action labels (`השבת` / `הפעל`) and status text (`פעיל` /
+`לא פעיל`), not bare icons.
+
+### `st.multiselect` is poor in RTL — prefer checkboxes / selectbox
+
+`st.multiselect` renders selected values as LTR "chips" that look broken in a
+Hebrew layout. For assigning items (e.g. managers to a grandma):
+
+- **Few options** → a list of `st.checkbox` (one per option, label `שם — אימייל`),
+  inside an `st.form`, reconciled on submit. This is the cleanest RTL choice.
+- **Single choice** → `st.selectbox` + an "הוסף שיוך" button, with a separate list of
+  current items each having a "הסר" button.
+
+Do **not** build a complex matrix UI. Keep it readable.
+
 ### Per-screen RTL checklist (run for every Hebrew screen)
 
 1. All titles aligned right.
