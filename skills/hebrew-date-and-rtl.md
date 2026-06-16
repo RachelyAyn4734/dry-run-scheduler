@@ -33,7 +33,52 @@ st.markdown(
 )
 ```
 
-For inputs and standard Streamlit widgets, RTL is handled automatically by the browser when the text is Hebrew. No extra CSS needed for `st.text_input`, `st.text_area`, etc.
+---
+
+## Streamlit Native Widgets Need Explicit RTL Handling
+
+**Do not assume the browser handles RTL for native widgets — it does not.** Adding
+`direction: rtl` to the outer container is *not enough*; every Hebrew screen must be
+checked visually. The global CSS in `inject_css()` already handles the common cases —
+extend it there, do not re-add per-screen rules that already exist.
+
+Widgets that require explicit handling:
+
+- `st.text_input` — label and value must be right-aligned for Hebrew.
+- `st.text_area` — same as text_input.
+- `st.number_input` — its built-in `+`/`-` steppers render **detached and spread out**
+  in RTL. **Prefer a custom compact stepper** (columns + `session_state`, e.g.
+  `➖ value ➕`) over fighting the native control. See `grandma_schedule_view()` for the
+  reference implementation (participant count).
+- `st.radio` — set `[role="radiogroup"] { direction: rtl }` **and** make each `label` a
+  flex row (`align-items:center; gap:8px`) so the circle stays visually attached to its text.
+- `st.selectbox` — right-align the label; the value follows `direction: rtl`.
+- `st.date_input` — right-align the label; keep the calendar usable.
+- `st.form` — RTL must be applied to the controls inside, not just the form container.
+- `st.alert` / `st.info` / `st.warning` / `st.error` / `st.success` — left-aligned by
+  default; fixed globally via `[data-testid="stAlert"]`.
+
+### Inputs: alignment and readability
+
+- **Hebrew fields** (names, notes): `direction: rtl; text-align: right`.
+- **Password fields**: keep **LTR** (`direction: ltr; text-align: left`). Right-aligned
+  text slides **under the reveal-eye icon** and the user cannot see what they type. The
+  global CSS targets `input[type="password"]` for this.
+- **Email fields**: the value may stay LTR for readability, but the **label** must still
+  be right-aligned.
+- **Never** let placeholder/label text cover the typed value. If a floating label would
+  overlap, drop the placeholder and use a clear label above the input.
+
+### Per-screen RTL checklist (run for every Hebrew screen)
+
+1. All titles aligned right.
+2. All labels aligned right.
+3. All inputs readable while typing (nothing hidden under icons/labels).
+4. Radio/checkbox labels aligned right and attached to their control.
+5. Number inputs compact and readable (custom stepper if needed).
+6. Buttons use consistent RTL arrows (`→` back, `←` forward).
+7. Empty / error / success messages aligned right.
+8. No reversed Hebrew strings (verify codepoints, not just visual rendering).
 
 ---
 

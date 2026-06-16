@@ -4,30 +4,40 @@ Applies to `services/email_service.py` and all callers in `services/grandma_visi
 
 ---
 
-## Recipients: Always Load from DB
+## Recipients: Always Resolve via the Scoped Resolver
 
-**Never hardcode manager email addresses.**
+**Never hardcode manager email addresses, and never notify "all managers" globally.**
+
+Recipients come from `managers_repository.get_recipients(supabase, service_type, entity_id)`.
+See `scoped-manager-notifications.md` for the full model.
 
 ```python
-# Correct
-managers = get_active_managers(supabase)
-for manager in managers:
+# Correct — scoped to one grandma
+from repositories import managers_repository
+from utils.constants import SERVICE_GRANDMA
+
+recipients = managers_repository.get_recipients(supabase, SERVICE_GRANDMA, grandma_id)
+for manager in recipients:
     email_service.send_visit_notification_v2(secrets, manager["email"], ...)
 
-# Wrong
+# Wrong — global list (removed) or hardcoded email
 email_service.send_visit_notification_v2(secrets, "rachel@example.com", ...)
 ```
 
-Only active managers (`is_active=True`) receive notifications. Always filter by `is_active`.
+The resolver already filters on `managers.is_active` AND `manager_assignments.is_active`,
+and deduplicates by email. It returns `[]` (never raises) when nobody is assigned.
 
 ---
 
-## Both Booking and Cancellation Must Notify Managers
+## Both Booking and Cancellation Must Notify the Same Recipients
 
-- New visit booked → `send_visit_notification_v2()` to all active managers.
-- Visit cancelled → `send_visit_cancellation()` to all active managers.
+- New grandma visit booked → `send_visit_notification_v2()` to that grandma's managers.
+- Grandma visit cancelled → `send_visit_cancellation()` to that grandma's managers.
+- New Dry Run booking → `send_dry_run_notification()` to Dry Run managers.
 
-If you add a new booking or cancellation path (e.g., admin cancel button), wire up the email there too.
+Booking and cancellation must use the **same** `get_recipients(...)` call for a given
+scope so they never drift. If you add a new booking or cancellation path (e.g., admin
+cancel button), wire up the scoped email there too.
 
 ---
 
@@ -122,3 +132,12 @@ logger.info("[MAIL] Connecting to %s:%s", smtp_server, smtp_port)
 - [ ] Original date and time
 - [ ] Participant count
 - [ ] Clear cancellation wording ("ביקור שתוכנן בוטל")
+
+## Dry Run Notification Content Checklist
+
+`send_dry_run_notification` must include:
+- [ ] Booker name (in subject and body)
+- [ ] Booker email
+- [ ] Date (`dd/MM/yyyy`)
+- [ ] Time (`HH:mm`)
+- [ ] HTML + plain-text fallback, all user values escaped with `html.escape()`

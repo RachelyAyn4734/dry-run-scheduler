@@ -91,6 +91,81 @@ def send_confirmation(
         return False
 
 
+def send_dry_run_notification(
+    secrets,
+    manager_email: str,
+    manager_name: str,
+    booker_name: str,
+    booker_email: str,
+    date_str: str,
+    time_str: str,
+) -> bool:
+    """
+    Notify a single Dry Run manager that a session was booked.
+    HTML + plain-text alternative, all user values escaped.
+    Returns True on success, False on any failure. Does NOT raise.
+    """
+    cfg = _get_smtp_config(secrets)
+    if cfg is None:
+        return False
+    smtp_server, smtp_port, smtp_user, smtp_password = cfg
+
+    # Escape all user-supplied values before embedding in HTML.
+    h_manager = html.escape(manager_name)
+    h_booker  = html.escape(booker_name)
+    h_email   = html.escape(booker_email)
+    h_date    = html.escape(date_str)
+    h_time    = html.escape(time_str)
+
+    subject = f"נקבעה פגישת Dry Run חדשה: {booker_name}"
+
+    plain_body = (
+        f"שלום {manager_name},\n\n"
+        f"נקבעה פגישת Dry Run חדשה.\n\n"
+        f"שם: {booker_name}\n"
+        f"אימייל: {booker_email}\n"
+        f"תאריך: {date_str}\n"
+        f"שעה: {time_str}\n\n"
+        f"יום נעים 🌸\n"
+    )
+
+    html_body = f"""
+<div dir="rtl" style="text-align:right; font-family:Arial, sans-serif; line-height:1.8;">
+  <h2>נקבעה פגישת Dry Run חדשה</h2>
+  <p>שלום {h_manager},</p>
+  <p>
+    <strong>שם:</strong> {h_booker}<br>
+    <strong>אימייל:</strong> {h_email}<br>
+    <strong>תאריך:</strong> {h_date}<br>
+    <strong>שעה:</strong> {h_time}
+  </p>
+  <p>יום נעים 🌸</p>
+</div>
+"""
+
+    # plain first, html second — clients use the last supported part
+    msg = MIMEMultipart("alternative")
+    msg["From"]    = smtp_user
+    msg["To"]      = manager_email
+    msg["Subject"] = Header(subject, "utf-8")
+    msg.attach(MIMEText(plain_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body,  "html",  "utf-8"))
+
+    try:
+        logger.info("[MAIL] Sending Dry Run notification to %s", manager_email)
+        with smtplib.SMTP(smtp_server, smtp_port) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, manager_email, msg.as_string())
+        logger.info("[MAIL] Dry Run notification sent to %s", manager_email)
+        return True
+    except Exception:
+        logger.exception("[MAIL] Failed to send Dry Run notification to %s", manager_email)
+        return False
+
+
 def send_visit_notification(
     secrets,
     manager_email: str,

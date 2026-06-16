@@ -7,8 +7,10 @@ from datetime import date as Date
 
 from supabase import Client
 
+from repositories import managers_repository
 from repositories.slots_repository import atomic_book_slot, clear_slot, fetch_user_slot
 from services import calendar_service, email_service
+from utils.constants import SERVICE_DRY_RUN
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,24 @@ def book(
     mail_ok = email_service.send_confirmation(
         secrets, user_email, user_name, slot_date.isoformat(), start_time
     )
+
+    # Step 4: Dry Run manager notifications (best-effort, scoped, additive).
+    # No managers assigned → loop is empty and booking still succeeds.
+    # Any failure here is logged and swallowed — it never rolls back the booking.
+    try:
+        recipients = managers_repository.get_recipients(supabase, SERVICE_DRY_RUN)
+        for manager in recipients:
+            email_service.send_dry_run_notification(
+                secrets,
+                manager_email=manager["email"],
+                manager_name=manager["name"],
+                booker_name=user_name,
+                booker_email=user_email,
+                date_str=slot_date.strftime("%d/%m/%Y"),
+                time_str=start_time,
+            )
+    except Exception:
+        logger.exception("[BOOK] Error sending Dry Run manager notifications for slot %s", slot_id)
 
     return {
         "success": True,
