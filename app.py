@@ -1300,6 +1300,20 @@ def grandma_admin_view():
     # ── TAB 1: Slots ──────────────────────────────────────────
     with gtab1:
         try:
+            # Screen-scoped RTL polish: selectbox value + horizontal radio filter.
+            st.markdown("""
+            <style>
+            div[data-testid="stSelectbox"] [data-baseweb="select"] { direction: rtl; }
+            div[data-testid="stSelectbox"] [data-baseweb="select"] div { text-align: right; }
+            div[data-testid="stRadio"] [role="radiogroup"] {
+                direction: rtl; justify-content: flex-start; gap: 20px; flex-wrap: wrap;
+            }
+            div[data-testid="stRadio"] label {
+                direction: rtl; display: flex; align-items: center; gap: 6px;
+            }
+            div[data-testid="stRadio"] label p { margin: 0; }
+            </style>
+            """, unsafe_allow_html=True)
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מועד ביקור</p>',
                             unsafe_allow_html=True)
@@ -1365,14 +1379,19 @@ def grandma_admin_view():
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">📋 המועדים</p>',
                             unsafe_allow_html=True)
-                # Display filter (no data is deleted — filtering only).
-                slot_filter = st.radio(
+                # Filter row — fully RTL: label on the right, options flowing right→left.
+                fc_radio, fc_label = st.columns([4, 1.4])
+                fc_label.markdown(
+                    '<div style="direction:rtl;text-align:right;font-weight:700;'
+                    'padding-top:6px;">סינון מועדים:</div>',
+                    unsafe_allow_html=True,
+                )
+                # Display filter only — no data is deleted.
+                slot_filter = fc_radio.radio(
                     "סינון מועדים",
                     ["עתידיים", "היום", "היסטוריה"],
                     horizontal=True, key="ga_slot_filter", label_visibility="collapsed",
                 )
-                # Build grandma id→name map for the listing
-                all_gr_map = {g["id"]: g["name"] for g in get_all_grandmas(supabase)}
                 all_vslots = fetch_all_visit_slots(supabase)
                 now_dt = now_il()
                 today_d = now_dt.date()
@@ -1386,25 +1405,52 @@ def grandma_admin_view():
                         return start.date() == today_d
                     return end <= now_dt  # היסטוריה
 
+                def _slot_status(s):
+                    """Display status from existing slot fields (no booking query)."""
+                    if not s.get("is_active", True):
+                        return "לא פעיל", "#6b7280"
+                    if s.get("is_available"):
+                        return "פנוי", "#065f46"
+                    if s.get("allows_shared_visits"):
+                        return "מלא", "#991b1b"
+                    return "תפוס", "#991b1b"
+
+                def _rtl_cell(text, *, bold=False, color="#111827"):
+                    weight = "700" if bold else "400"
+                    return (f'<div style="direction:rtl;text-align:right;'
+                            f'font-weight:{weight};color:{color};">{text}</div>')
+
                 vslots = [s for s in all_vslots if _keep_slot(s)]
                 if not vslots:
                     st.info("אין מועדים להצגה.")
                 else:
+                    # Columns left→right: delete, status, capacity, datetime
+                    # → datetime on the right, delete on the far left (RTL order).
+                    ratios = [0.8, 1.6, 2.2, 3]
+                    h_del, h_status, h_cap, h_dt = st.columns(ratios)
+                    h_dt.markdown(_rtl_cell("תאריך ושעה", bold=True), unsafe_allow_html=True)
+                    h_cap.markdown(_rtl_cell("מקסימום משתתפים", bold=True), unsafe_allow_html=True)
+                    h_status.markdown(_rtl_cell("סטטוס", bold=True), unsafe_allow_html=True)
+                    h_del.markdown(_rtl_cell("מחיקה", bold=True), unsafe_allow_html=True)
+
                     for s in vslots:
-                        dt = _slot_dt(s["slot_start"])
-                        avail = "🟢 פנוי" if s["is_available"] else "🔴 תפוס"
-                        badge = "b-avail" if s["is_available"] else "b-booked"
-                        gr_label = all_gr_map.get(s.get("grandma_id"), "—")
-                        shared_label = " | משותף" if s.get("allows_shared_visits") else ""
-                        sc1, sc2, sc3 = st.columns([3, 2, 0.7])
-                        sc1.markdown(
-                            f"**📅 {safe(dt.strftime('%d/%m/%Y %H:%M'))}** "
-                            f"· {safe(gr_label)} "
-                            f"· עד {s.get('max_participants', 1)}{safe(shared_label)}"
-                        )
-                        sc2.markdown(f'<span class="badge {badge}">{avail}</span>',
-                                     unsafe_allow_html=True)
-                        if sc3.button("🗑️", key=f"ga_del_vs_{s['id']}"):
+                        start = _slot_dt(s["slot_start"])
+                        end = _slot_dt(s["slot_end"])
+                        dt_text = (f"{start.strftime('%d/%m/%Y')} "
+                                   f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}")
+                        max_n = s.get("max_participants", 1)
+                        kind = "משותף" if s.get("allows_shared_visits") else "פרטי"
+                        cap_text = f"עד {max_n} משתתפים · {kind}"
+                        status_text, status_color = _slot_status(s)
+
+                        c_del, c_status, c_cap, c_dt = st.columns(ratios)
+                        c_dt.markdown(_rtl_cell(safe(dt_text), bold=True), unsafe_allow_html=True)
+                        c_cap.markdown(_rtl_cell(safe(cap_text), color="#6b7280"),
+                                       unsafe_allow_html=True)
+                        c_status.markdown(_rtl_cell(status_text, color=status_color),
+                                          unsafe_allow_html=True)
+                        if c_del.button("🗑️", key=f"ga_del_vs_{s['id']}",
+                                        help="מחיקה", use_container_width=True):
                             delete_visit_slot(supabase, s["id"])
                             st.rerun()
         except Exception:
