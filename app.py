@@ -247,10 +247,20 @@ def inject_css():
         direction: rtl !important;
         text-align: right !important;
     }
+    /* Password inputs stay LTR so typed characters never slide under the
+       reveal-eye icon (Streamlit toggles type to "text" when revealed). */
+    .stTextInput input[type="password"] {
+        direction: ltr !important;
+        text-align: left !important;
+    }
+    /* Labels: force block + full width so text-align:right always takes effect. */
     [data-testid="stWidgetLabel"] {
         direction: rtl !important;
         text-align: right !important;
+        display: block !important;
+        width: 100% !important;
     }
+    [data-testid="stWidgetLabel"] p { text-align: right !important; }
     .stRadio [role="radiogroup"] { direction: rtl !important; }
     .stRadio label { direction: rtl !important; }
     </style>
@@ -449,10 +459,13 @@ def _grandma_reset():
                 "grandma_pending_slot", "grandma_note_visit",
                 "grandma_booking_success", "grandma_name_not_found"]:
         st.session_state.pop(key, None)
-    # Clear dynamic per-visit cancellation confirmation keys to prevent ghost dialogs.
-    stale = [k for k in st.session_state if k.startswith("confirm_cancel_visit_")]
-    for k in stale:
-        del st.session_state[k]
+    # Clear dynamic prefixed keys to prevent ghost UI state on re-entry:
+    #   confirm_cancel_visit_{id} — per-visit cancellation dialogs
+    #   grandma_pc_{slot_id}      — participant-count stepper values
+    for prefix in ("confirm_cancel_visit_", "grandma_pc_"):
+        stale = [k for k in st.session_state if k.startswith(prefix)]
+        for k in stale:
+            del st.session_state[k]
     st.session_state.active_module = None
 
 
@@ -753,12 +766,19 @@ def grandma_schedule_view():
         with st.container(border=True):
             st.markdown("""
             <style>
-            div[data-testid="stRadio"] { direction: rtl; text-align: right; }
-            div[data-testid="stRadio"] > div { direction: rtl; }
-            div[data-testid="stRadio"] label { direction: rtl; }
-            div[data-testid="stRadio"] label p { text-align: right; }
-            div[data-testid="stNumberInput"] { direction: rtl; text-align: right; }
-            div[data-testid="stNumberInput"] input { text-align: right; }
+            /* Radio — tight, RTL, circle visually attached to its label */
+            div[data-testid="stRadio"] [role="radiogroup"] { direction: rtl; gap: 4px; }
+            div[data-testid="stRadio"] label {
+                direction: rtl; display: flex; flex-direction: row;
+                align-items: center; gap: 8px; text-align: right;
+            }
+            div[data-testid="stRadio"] label p { text-align: right; margin: 0; }
+            /* Compact participant stepper value box (aligns with the +/- buttons) */
+            .pc-value {
+                text-align: center; font-size: 26px; font-weight: 800; color: #111827;
+                line-height: 3.4rem; background: #fff7ed;
+                border: 2px solid #fed7aa; border-radius: 16px;
+            }
             </style>
             """, unsafe_allow_html=True)
             st.markdown('<p class="sec-title" style="direction:rtl;">✅ אישור ביקור</p>',
@@ -773,19 +793,43 @@ def grandma_schedule_view():
             </div>
             """, unsafe_allow_html=True)
 
+            # Participant count — compact custom stepper. Replaces st.number_input,
+            # whose +/- steppers render detached and spread out under direction:rtl.
+            # Value persists across reruns in session_state (does not reset the flow).
+            remaining = int(remaining)
+            pc_key = f"grandma_pc_{ps['id']}"
+            if pc_key not in st.session_state:
+                st.session_state[pc_key] = 1
+            # Clamp to current capacity (slot capacity can shift between reruns).
+            st.session_state[pc_key] = max(1, min(st.session_state[pc_key], remaining))
+
             st.markdown(
-                '<p style="direction:rtl;font-weight:700;margin-top:14px;">👥 כמה משתתפים תגיעו?</p>',
+                '<p style="direction:rtl;text-align:right;font-weight:700;margin-top:14px;">👥 כמה משתתפים תגיעו?</p>',
                 unsafe_allow_html=True,
             )
-            participant_count = st.number_input(
-                "משתתפים", min_value=1, max_value=int(remaining), value=1, step=1,
-                label_visibility="collapsed",
-            )
+            # Narrow, centered row: ➖ (left) — value — ➕ (right). Spacer columns keep it compact.
+            _, c_minus, c_val, c_plus, _ = st.columns([3, 1, 1.3, 1, 3])
+            if c_minus.button("➖", key=f"pc_minus_{ps['id']}", use_container_width=True,
+                              disabled=st.session_state[pc_key] <= 1):
+                st.session_state[pc_key] -= 1
+                st.rerun()
+            c_val.markdown(f"<div class='pc-value'>{st.session_state[pc_key]}</div>",
+                           unsafe_allow_html=True)
+            if c_plus.button("➕", key=f"pc_plus_{ps['id']}", use_container_width=True,
+                             disabled=st.session_state[pc_key] >= remaining):
+                st.session_state[pc_key] += 1
+                st.rerun()
+            participant_count = st.session_state[pc_key]
+            if remaining > 1:
+                st.markdown(
+                    f'<p style="direction:rtl;text-align:right;font-size:13px;color:#6b7280;margin-top:4px;">ניתן לבחור עד {remaining} משתתפים</p>',
+                    unsafe_allow_html=True,
+                )
 
             allow_joiners = False
             if ps.get("allows_shared_visits"):
                 st.markdown(
-                    '<p style="direction:rtl;font-weight:700;margin-top:10px;">🤝 האם אפשר להצטרף אליכם לביקור?</p>',
+                    '<p style="direction:rtl;text-align:right;font-weight:700;margin-top:10px;">🤝 האם אפשר להצטרף אליכם לביקור?</p>',
                     unsafe_allow_html=True,
                 )
                 joiners_choice = st.radio(
