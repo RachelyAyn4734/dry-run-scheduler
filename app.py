@@ -1301,60 +1301,93 @@ def grandma_admin_view():
     with gtab1:
         try:
             # Deploy/version marker — confirms this exact block is the rendered screen.
-            st.caption("version: grandma-slots-screen-v4")
-            # Screen-scoped RTL polish: selectbox value + horizontal radio filter.
-            st.markdown("""
-            <style>
-            div[data-testid="stSelectbox"] [data-baseweb="select"] { direction: rtl; }
-            div[data-testid="stSelectbox"] [data-baseweb="select"] div { text-align: right; }
-            /* Opened dropdown options render in a body-level popover portal,
-               so they must be targeted globally (not under stSelectbox). */
-            ul[role="listbox"] li,
-            [data-baseweb="popover"] [role="option"] {
-                direction: rtl !important; text-align: right !important;
-            }
-            div[data-testid="stRadio"] [role="radiogroup"] {
-                direction: rtl; justify-content: flex-start; gap: 20px; flex-wrap: wrap;
-            }
-            div[data-testid="stRadio"] label {
-                direction: rtl; display: flex; align-items: center; gap: 6px;
-            }
-            div[data-testid="stRadio"] label p { margin: 0; }
-            </style>
-            """, unsafe_allow_html=True)
+            st.caption("version: grandma-slots-screen-v5")
+
+            # Small right-aligned RTL banner helper (reliable; no BaseWeb dependency).
+            def _ga_banner(text, *, bg, border, color):
+                st.markdown(
+                    f'<div style="direction:rtl;text-align:right;background:{bg};'
+                    f'border:1px solid {border};color:{color};border-radius:10px;'
+                    f'padding:10px 14px;font-weight:700;margin:6px 0;">{safe(text)}</div>',
+                    unsafe_allow_html=True,
+                )
+
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מועד ביקור</p>',
                             unsafe_allow_html=True)
-                # One-shot success message shown after a successful add + rerun.
+                # One-shot success message shown after a successful add + rerun (req. 5).
                 if st.session_state.pop("ga_slot_added", False):
-                    st.success("המועד התווסף בהצלחה")
-                # Grandma selector — required; no slot without a grandma
+                    _ga_banner("המועד התווסף בהצלחה",
+                               bg="#ecfdf5", border="#6ee7b7", color="#065f46")
+
+                today_il = now_il().date()
+
+                # Grandma selector — required; no slot without a grandma.
+                # Buttons instead of a selectbox: deterministic RTL (req. 1).
                 slot_grandmas = get_active_grandmas(supabase)
                 if not slot_grandmas:
                     st.warning("אין סבתות פעילות. הוסיפי סבתא בטאב 👵 סבתות תחילה.")
                 else:
-                    grandma_name_map = {g["name"]: g["id"] for g in slot_grandmas}
-                    sel_gr_name = st.selectbox(
-                        "סבתא", list(grandma_name_map.keys()), key="ga_slot_grandma",
-                    )
-                    sel_gr_id = grandma_name_map[sel_gr_name]
+                    gr_ids = [g["id"] for g in slot_grandmas]
+                    if st.session_state.get("ga_slot_grandma_id") not in gr_ids:
+                        st.session_state["ga_slot_grandma_id"] = gr_ids[0]
+                    sel_gr_id = st.session_state["ga_slot_grandma_id"]
+
+                    st.markdown('<div style="direction:rtl;text-align:right;font-weight:700;'
+                                'color:#374151;margin-bottom:4px;">סבתא</div>',
+                                unsafe_allow_html=True)
+                    # reversed() places the first grandma in the right-most column (RTL).
+                    gr_cols = st.columns(len(slot_grandmas))
+                    for col, g in zip(reversed(gr_cols), slot_grandmas):
+                        is_sel = g["id"] == sel_gr_id
+                        if col.button(g["name"], key=f"ga_gr_btn_{g['id']}",
+                                      type="primary" if is_sel else "secondary",
+                                      use_container_width=True):
+                            st.session_state["ga_slot_grandma_id"] = g["id"]
+                            st.rerun()
+                    sel_gr_id = st.session_state["ga_slot_grandma_id"]
+                    sel_gr_name = next(g["name"] for g in slot_grandmas
+                                       if g["id"] == sel_gr_id)
+
+                    # Hours already used by this grandma (any state) → cannot re-add (req. 2).
+                    existing_for_gr = fetch_all_visit_slots(supabase, grandma_id=sel_gr_id)
+                    taken_by_date: dict = {}
+                    for s in existing_for_gr:
+                        sdt = _slot_dt(s["slot_start"])
+                        taken_by_date.setdefault(sdt.date(), set()).add(f"{sdt.hour:02d}:00")
+
+                    def _avail_hours(d):
+                        hrs = [f"{h:02d}:00" for h in range(7, 22)]
+                        if d == today_il:
+                            ch = now_il().hour
+                            hrs = [t for t in hrs if int(t[:2]) > ch]  # only later today
+                        taken = taken_by_date.get(d, set())
+                        return [t for t in hrs if t not in taken]
+
+                    # Default date = first day from today onward with ≥1 free hour (req. 2).
+                    default_date = today_il
+                    for i in range(0, 120):
+                        d = today_il + timedelta(days=i)
+                        if _avail_hours(d):
+                            default_date = d
+                            break
 
                     gc1, gc2 = st.columns(2)
-                    today_il = now_il().date()
                     # gc2 = right column (תאריך), gc1 = left column (שעה) — RTL natural order.
-                    # Build date first so past hours can be hidden when the date is today.
-                    g_date = gc2.date_input("תאריך", value=today_il,
+                    g_date = gc2.date_input("תאריך", value=default_date,
                                             min_value=today_il, format="DD/MM/YYYY",
                                             key="ga_slot_date")
-                    all_hours = [f"{h:02d}:00" for h in range(7, 22)]
-                    if g_date == today_il:
-                        current_hour = now_il().hour
-                        all_hours = [t for t in all_hours if int(t[:2]) > current_hour]
-                    if not all_hours:
-                        gc1.warning("אין שעות פנויות מאוחר יותר היום.")
+                    avail_hours = _avail_hours(g_date)
+                    if not avail_hours:
+                        # No empty/broken selector — one small right-aligned message (req. 2).
+                        with gc1:
+                            _ga_banner("אין שעות פנויות בתאריך שנבחר",
+                                       bg="#fffbeb", border="#fde68a", color="#92400e")
                         g_time = None
                     else:
-                        g_time = gc1.selectbox("שעה", all_hours, key="ga_slot_time",
+                        # No widget key: options change with date/grandma, so an ephemeral
+                        # widget avoids a stale-session-value crash.
+                        g_time = gc1.selectbox("שעה", avail_hours,
                                                format_func=slot_range_label)
 
                     cp1, cp2 = st.columns(2)
@@ -1366,41 +1399,52 @@ def grandma_admin_view():
                         "ביקור משותף (כמה משפחות)", value=False, key="ga_slot_shared",
                     )
 
+                    # Disabled when the selected date has no free hours (req. 2).
                     if st.button("💾 הוסף מועד", type="primary", use_container_width=True,
-                                 key="ga_add_slot"):
-                        if not g_time:
-                            st.warning("נא לבחור שעה.")
+                                 key="ga_add_slot", disabled=(g_time is None)):
+                        h_val, m_val = int(g_time[:2]), int(g_time[3:5])
+                        slot_start_dt = IL_TZ.localize(
+                            datetime(g_date.year, g_date.month, g_date.day, h_val, m_val)
+                        )
+                        slot_end_dt = slot_start_dt + timedelta(hours=1)
+                        if add_visit_slot(
+                            supabase, slot_start_dt, slot_end_dt,
+                            grandma_id=sel_gr_id,
+                            max_participants=int(max_parts),
+                            allows_shared_visits=allow_shared,
+                        ):
+                            st.session_state["ga_slot_added"] = True
+                            st.rerun()
                         else:
-                            h_val, m_val = int(g_time[:2]), int(g_time[3:5])
-                            slot_start_dt = IL_TZ.localize(
-                                datetime(g_date.year, g_date.month, g_date.day, h_val, m_val)
-                            )
-                            slot_end_dt = slot_start_dt + timedelta(hours=1)
-                            if add_visit_slot(
-                                supabase, slot_start_dt, slot_end_dt,
-                                grandma_id=sel_gr_id,
-                                max_participants=int(max_parts),
-                                allows_shared_visits=allow_shared,
-                            ):
-                                st.session_state["ga_slot_added"] = True
-                                st.rerun()
-                            else:
-                                st.warning("המועד כבר קיים לסבתא הזו")
+                            _ga_banner("המועד כבר קיים לסבתא הזו",
+                                       bg="#fef2f2", border="#fca5a5", color="#991b1b")
 
             with st.container(border=True):
-                # Single RTL filter row: title on the right, options right→left beside it.
-                fc_radio, fc_title = st.columns([4.5, 1.6], gap="small")
+                # Filter row as 3 buttons (req. 4): one title, options right→left beside it.
+                if "ga_slot_filter" not in st.session_state:
+                    st.session_state["ga_slot_filter"] = "עתידיים"
+                cur_filter = st.session_state["ga_slot_filter"]
+                # Columns left→right: היסטוריה, היום, עתידיים, title → reads RTL as
+                # "סינון מועדים:  עתידיים  היום  היסטוריה".
+                fc_hist, fc_today, fc_future, fc_title = st.columns([1, 1, 1, 1.6],
+                                                                    gap="small")
                 fc_title.markdown(
-                    '<div style="direction:rtl;text-align:right;font-size:20px;'
-                    'font-weight:800;color:#111827;padding-top:4px;">סינון מועדים</div>',
+                    '<div style="direction:rtl;text-align:right;font-size:18px;'
+                    'font-weight:800;color:#111827;padding-top:6px;">סינון מועדים:</div>',
                     unsafe_allow_html=True,
                 )
-                # Display filter only — no data is deleted.
-                slot_filter = fc_radio.radio(
-                    "סינון מועדים",
-                    ["עתידיים", "היום", "היסטוריה"],
-                    horizontal=True, key="ga_slot_filter", label_visibility="collapsed",
-                )
+
+                def _filter_btn(col, label):
+                    if col.button(label, key=f"ga_filt_{label}", use_container_width=True,
+                                  type="primary" if cur_filter == label else "secondary"):
+                        st.session_state["ga_slot_filter"] = label
+                        st.rerun()
+
+                _filter_btn(fc_future, "עתידיים")
+                _filter_btn(fc_today, "היום")
+                _filter_btn(fc_hist, "היסטוריה")
+                slot_filter = st.session_state["ga_slot_filter"]
+
                 all_vslots = fetch_all_visit_slots(supabase)
                 now_dt = now_il()
                 today_d = now_dt.date()
