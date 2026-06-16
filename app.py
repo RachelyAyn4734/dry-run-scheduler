@@ -1305,6 +1305,12 @@ def grandma_admin_view():
             <style>
             div[data-testid="stSelectbox"] [data-baseweb="select"] { direction: rtl; }
             div[data-testid="stSelectbox"] [data-baseweb="select"] div { text-align: right; }
+            /* Opened dropdown options render in a body-level popover portal,
+               so they must be targeted globally (not under stSelectbox). */
+            ul[role="listbox"] li,
+            [data-baseweb="popover"] [role="option"] {
+                direction: rtl !important; text-align: right !important;
+            }
             div[data-testid="stRadio"] [role="radiogroup"] {
                 direction: rtl; justify-content: flex-start; gap: 20px; flex-wrap: wrap;
             }
@@ -1317,6 +1323,9 @@ def grandma_admin_view():
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מועד ביקור</p>',
                             unsafe_allow_html=True)
+                # One-shot success message shown after a successful add + rerun.
+                if st.session_state.pop("ga_slot_added", False):
+                    st.success("המועד התווסף בהצלחה")
                 # Grandma selector — required; no slot without a grandma
                 slot_grandmas = get_active_grandmas(supabase)
                 if not slot_grandmas:
@@ -1371,19 +1380,17 @@ def grandma_admin_view():
                                 max_participants=int(max_parts),
                                 allows_shared_visits=allow_shared,
                             ):
-                                st.success("✅ מועד נוסף!")
+                                st.session_state["ga_slot_added"] = True
                                 st.rerun()
                             else:
                                 st.warning("מועד זה כבר קיים לסבתא זו.")
 
             with st.container(border=True):
-                st.markdown('<p class="sec-title" style="direction:rtl;">📋 המועדים</p>',
-                            unsafe_allow_html=True)
-                # Filter row — fully RTL: label on the right, options flowing right→left.
-                fc_radio, fc_label = st.columns([4, 1.4])
-                fc_label.markdown(
-                    '<div style="direction:rtl;text-align:right;font-weight:700;'
-                    'padding-top:6px;">סינון מועדים:</div>',
+                # Single RTL filter row: title on the right, options right→left beside it.
+                fc_radio, fc_title = st.columns([4.5, 1.6], gap="small")
+                fc_title.markdown(
+                    '<div style="direction:rtl;text-align:right;font-size:20px;'
+                    'font-weight:800;color:#111827;padding-top:4px;">סינון מועדים</div>',
                     unsafe_allow_html=True,
                 )
                 # Display filter only — no data is deleted.
@@ -1397,6 +1404,10 @@ def grandma_admin_view():
                 today_d = now_dt.date()
 
                 def _keep_slot(s):
+                    # Show only usable slots: admin-active AND with free capacity
+                    # (is_available=False covers booked / full / private-with-booking).
+                    if not (s.get("is_active", True) and s.get("is_available", False)):
+                        return False
                     start = _slot_dt(s["slot_start"])
                     end = _slot_dt(s["slot_end"])
                     if slot_filter == "עתידיים":
