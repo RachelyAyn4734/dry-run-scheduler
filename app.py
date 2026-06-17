@@ -77,7 +77,7 @@ from repositories.descendants_repository import (
 )
 from repositories.visit_slots_repository import (
     fetch_available_visit_slots, fetch_all_visit_slots,
-    add_visit_slot, delete_visit_slot,
+    add_visit_slot, update_visit_slot, delete_visit_slot,
     fetch_private_blocked_slot_ids,
 )
 from repositories.grandma_visits_repository import (
@@ -1301,7 +1301,29 @@ def grandma_admin_view():
     with gtab1:
         try:
             # Deploy/version marker — confirms this exact block is the rendered screen.
-            st.caption("version: grandma-slots-screen-v5")
+            st.caption("version: grandma-slots-screen-v6")
+
+            # Clear, family-friendly visit-type labels (req. 4) — used in add + edit.
+            VISIT_KIND_PRIVATE = "ביקור פרטי"
+            VISIT_KIND_SHARED = "ביקור משותף — ניתן לצרף משפחות נוספות"
+
+            # Screen-scoped styling:
+            #  - RTL for the "סוג הביקור" radio (label + options).
+            #  - Strong rose ACTIVE state on the filter buttons (req. 2); scoped to the
+            #    filter keys via Streamlit's st-key-<key> wrapper class.
+            st.markdown("""
+            <style>
+            div[data-testid="stRadio"] > label { direction: rtl; text-align: right; }
+            div[data-testid="stRadio"] [role="radiogroup"] { direction: rtl; }
+            div[data-testid="stRadio"] [role="radiogroup"] > label { direction: rtl; }
+            .st-key-ga_filt_future [data-testid="stBaseButton-primary"],
+            .st-key-ga_filt_hist [data-testid="stBaseButton-primary"] {
+                background: #db2777 !important; border-color: #db2777 !important;
+                color: #ffffff !important; font-weight: 800 !important;
+                box-shadow: 0 2px 10px rgba(219,39,119,0.35) !important;
+            }
+            </style>
+            """, unsafe_allow_html=True)
 
             # Small right-aligned RTL banner helper (reliable; no BaseWeb dependency).
             def _ga_banner(text, *, bg, border, color):
@@ -1390,13 +1412,15 @@ def grandma_admin_view():
                         g_time = gc1.selectbox("שעה", avail_hours,
                                                format_func=slot_range_label)
 
-                    cp1, cp2 = st.columns(2)
-                    max_parts = cp1.number_input(
-                        "מקסימום משתתפים", min_value=1, max_value=50, value=1, step=1,
-                        key="ga_slot_max",
+                    # Visit type + capacity with clearer wording (req. 4).
+                    slot_kind = st.radio(
+                        "סוג הביקור", [VISIT_KIND_PRIVATE, VISIT_KIND_SHARED],
+                        index=0, key="ga_slot_kind",
                     )
-                    allow_shared = cp2.checkbox(
-                        "ביקור משותף (כמה משפחות)", value=False, key="ga_slot_shared",
+                    allow_shared = slot_kind == VISIT_KIND_SHARED
+                    max_parts = st.number_input(
+                        "מספר משתתפים מרבי", min_value=1, max_value=50, value=1, step=1,
+                        key="ga_slot_max",
                     )
 
                     # Disabled when the selected date has no free hours (req. 2).
@@ -1420,46 +1444,49 @@ def grandma_admin_view():
                                        bg="#fef2f2", border="#fca5a5", color="#991b1b")
 
             with st.container(border=True):
-                # Filter row as 3 buttons (req. 4): one title, options right→left beside it.
-                if "ga_slot_filter" not in st.session_state:
+                # Filter row as 2 buttons (req. 1): one title, options right→left beside it.
+                if st.session_state.get("ga_slot_filter") not in ("עתידיים", "היסטוריה"):
                     st.session_state["ga_slot_filter"] = "עתידיים"
                 cur_filter = st.session_state["ga_slot_filter"]
-                # Columns left→right: היסטוריה, היום, עתידיים, title → reads RTL as
-                # "סינון מועדים:  עתידיים  היום  היסטוריה".
-                fc_hist, fc_today, fc_future, fc_title = st.columns([1, 1, 1, 1.6],
-                                                                    gap="small")
+                # Columns left→right: היסטוריה, עתידיים, title → reads RTL as
+                # "סינון מועדים:  עתידיים  היסטוריה".
+                fc_hist, fc_future, fc_title = st.columns([1, 1, 1.6], gap="small")
                 fc_title.markdown(
                     '<div style="direction:rtl;text-align:right;font-size:18px;'
                     'font-weight:800;color:#111827;padding-top:6px;">סינון מועדים:</div>',
                     unsafe_allow_html=True,
                 )
 
-                def _filter_btn(col, label):
-                    if col.button(label, key=f"ga_filt_{label}", use_container_width=True,
+                def _filter_btn(col, label, btn_key):
+                    if col.button(label, key=btn_key, use_container_width=True,
                                   type="primary" if cur_filter == label else "secondary"):
                         st.session_state["ga_slot_filter"] = label
                         st.rerun()
 
-                _filter_btn(fc_future, "עתידיים")
-                _filter_btn(fc_today, "היום")
-                _filter_btn(fc_hist, "היסטוריה")
+                _filter_btn(fc_future, "עתידיים", "ga_filt_future")
+                _filter_btn(fc_hist, "היסטוריה", "ga_filt_hist")
                 slot_filter = st.session_state["ga_slot_filter"]
+
+                # One-shot edit result banner shown after save + rerun (req. 3).
+                edited = st.session_state.pop("ga_slot_edited", None)
+                if edited == "ok":
+                    _ga_banner("המועד עודכן בהצלחה",
+                               bg="#ecfdf5", border="#6ee7b7", color="#065f46")
+                elif edited == "err":
+                    _ga_banner("לא הצלחנו לעדכן את המועד",
+                               bg="#fef2f2", border="#fca5a5", color="#991b1b")
 
                 all_vslots = fetch_all_visit_slots(supabase)
                 now_dt = now_il()
-                today_d = now_dt.date()
 
                 def _keep_slot(s):
                     # Show only usable slots: admin-active AND with free capacity
                     # (is_available=False covers booked / full / private-with-booking).
                     if not (s.get("is_active", True) and s.get("is_available", False)):
                         return False
-                    start = _slot_dt(s["slot_start"])
                     end = _slot_dt(s["slot_end"])
                     if slot_filter == "עתידיים":
                         return end > now_dt
-                    if slot_filter == "היום":
-                        return start.date() == today_d
                     return end <= now_dt  # היסטוריה
 
                 def _slot_status(s):
@@ -1481,13 +1508,14 @@ def grandma_admin_view():
                 if not vslots:
                     st.info("אין מועדים להצגה.")
                 else:
-                    # Columns left→right: delete, status, capacity, datetime
+                    # Columns left→right: delete, edit, status, capacity, datetime
                     # → datetime on the right, delete on the far left (RTL order).
-                    ratios = [0.8, 1.6, 2.2, 3]
-                    h_del, h_status, h_cap, h_dt = st.columns(ratios)
+                    ratios = [0.8, 0.8, 1.5, 2.2, 3]
+                    h_del, h_edit, h_status, h_cap, h_dt = st.columns(ratios)
                     h_dt.markdown(_rtl_cell("תאריך ושעה", bold=True), unsafe_allow_html=True)
-                    h_cap.markdown(_rtl_cell("מקסימום משתתפים", bold=True), unsafe_allow_html=True)
+                    h_cap.markdown(_rtl_cell("פרטי המועד", bold=True), unsafe_allow_html=True)
                     h_status.markdown(_rtl_cell("סטטוס", bold=True), unsafe_allow_html=True)
+                    h_edit.markdown(_rtl_cell("עריכה", bold=True), unsafe_allow_html=True)
                     h_del.markdown(_rtl_cell("מחיקה", bold=True), unsafe_allow_html=True)
 
                     for s in vslots:
@@ -1495,21 +1523,51 @@ def grandma_admin_view():
                         end = _slot_dt(s["slot_end"])
                         dt_text = (f"{start.strftime('%d/%m/%Y')} "
                                    f"{start.strftime('%H:%M')}–{end.strftime('%H:%M')}")
-                        max_n = s.get("max_participants", 1)
-                        kind = "משותף" if s.get("allows_shared_visits") else "פרטי"
-                        cap_text = f"עד {max_n} משתתפים · {kind}"
+                        max_n = s.get("max_participants") or 1
+                        is_shared = bool(s.get("allows_shared_visits"))
+                        kind = "ביקור משותף" if is_shared else "ביקור פרטי"
+                        cap_text = f"{kind} · עד {max_n} משתתפים"
                         status_text, status_color = _slot_status(s)
 
-                        c_del, c_status, c_cap, c_dt = st.columns(ratios)
+                        c_del, c_edit, c_status, c_cap, c_dt = st.columns(ratios)
                         c_dt.markdown(_rtl_cell(safe(dt_text), bold=True), unsafe_allow_html=True)
                         c_cap.markdown(_rtl_cell(safe(cap_text), color="#6b7280"),
                                        unsafe_allow_html=True)
                         c_status.markdown(_rtl_cell(status_text, color=status_color),
                                           unsafe_allow_html=True)
+                        open_key = f"ga_edit_open_{s['id']}"
+                        if c_edit.button("✏️", key=f"ga_edit_btn_{s['id']}",
+                                         help="עריכה", use_container_width=True):
+                            st.session_state[open_key] = not st.session_state.get(open_key, False)
                         if c_del.button("🗑️", key=f"ga_del_vs_{s['id']}",
                                         help="מחיקה", use_container_width=True):
                             delete_visit_slot(supabase, s["id"])
                             st.rerun()
+
+                        # Inline edit panel — capacity + visit type only; never date/time (req. 3).
+                        if st.session_state.get(open_key, False):
+                            with st.container(border=True):
+                                st.markdown('<div style="direction:rtl;text-align:right;'
+                                            'font-weight:700;color:#374151;margin-bottom:6px;">'
+                                            '✏️ עריכת מועד</div>', unsafe_allow_html=True)
+                                e_kind = st.radio(
+                                    "סוג הביקור", [VISIT_KIND_PRIVATE, VISIT_KIND_SHARED],
+                                    index=1 if is_shared else 0, key=f"ga_edit_kind_{s['id']}",
+                                )
+                                e_max = st.number_input(
+                                    "מספר משתתפים מרבי", min_value=1, max_value=50,
+                                    value=int(max_n), step=1, key=f"ga_edit_max_{s['id']}",
+                                )
+                                if st.button("💾 שמירת שינויים", type="primary",
+                                             use_container_width=True,
+                                             key=f"ga_edit_save_{s['id']}"):
+                                    ok = update_visit_slot(
+                                        supabase, s["id"], int(e_max),
+                                        e_kind == VISIT_KIND_SHARED,
+                                    )
+                                    st.session_state["ga_slot_edited"] = "ok" if ok else "err"
+                                    st.session_state[open_key] = False
+                                    st.rerun()
         except Exception:
             logger.exception("[GRANDMA_ADMIN] slots tab error")
             st.error("שגיאה בטעינת המועדים.")

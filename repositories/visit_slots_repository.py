@@ -105,6 +105,25 @@ def set_slot_active(supabase: Client, slot_id: str, is_active: bool) -> None:
     logger.info("[VISIT_SLOTS] Set is_active=%s for slot %s", is_active, slot_id)
 
 
+def update_visit_slot(
+    supabase: Client,
+    slot_id: str,
+    max_participants: int,
+    allows_shared_visits: bool,
+) -> bool:
+    """
+    Admin edit of an existing slot's capacity and visit type only.
+    Never touches slot_start/slot_end/is_available/is_active. Returns True on success.
+    """
+    payload = {
+        "max_participants": max(1, int(max_participants)),
+        "allows_shared_visits": bool(allows_shared_visits),
+    }
+    r = supabase.table("visit_slots").update(payload).eq("id", slot_id).execute()
+    logger.info("[VISIT_SLOTS] Updated slot %s -> %s", slot_id, payload)
+    return bool(r.data)
+
+
 def delete_visit_slot(supabase: Client, slot_id: str) -> None:
     supabase.table("visit_slots").delete().eq("id", slot_id).execute()
     logger.info("[VISIT_SLOTS] Deleted slot %s", slot_id)
