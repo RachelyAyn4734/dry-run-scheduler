@@ -1293,65 +1293,68 @@ def grandma_admin_view():
         return
 
     # ── Tabs ───────────────────────────────────────────────────
-    gtab1, gtab2, gtab3, gtab4, gtab5, gtab6 = st.tabs([
-        "📅 מועדים", "📋 ביקורים", "👥 נכדים/ות", "📧 מנהלים", "👵 סבתות", "📸 גלריה"
+    # ── Shared helpers for the two slot tabs (קביעת מועדים + צפייה/עדכון מועדים) ──
+    # Hoisted to function scope so both slot tabs can use them.
+    # Clear, family-friendly visit-type labels — used in add + edit.
+    VISIT_KIND_PRIVATE = "ביקור פרטי"
+    VISIT_KIND_SHARED = "ביקור משותף — ניתן לצרף משפחות נוספות"
+
+    # Strong rose ACTIVE state on the filter buttons; scoped to the filter keys
+    # via Streamlit's st-key-<key> wrapper class.
+    st.markdown("""
+    <style>
+    .st-key-ga_filt_future [data-testid="stBaseButton-primary"],
+    .st-key-ga_filt_hist [data-testid="stBaseButton-primary"] {
+        background: #db2777 !important; border-color: #db2777 !important;
+        color: #ffffff !important; font-weight: 800 !important;
+        box-shadow: 0 2px 10px rgba(219,39,119,0.35) !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    # Small right-aligned RTL banner helper (reliable; no BaseWeb dependency).
+    def _ga_banner(text, *, bg, border, color):
+        st.markdown(
+            f'<div style="direction:rtl;text-align:right;background:{bg};'
+            f'border:1px solid {border};color:{color};border-radius:10px;'
+            f'padding:10px 14px;font-weight:700;margin:6px 0;">{safe(text)}</div>',
+            unsafe_allow_html=True,
+        )
+
+    # RTL visit-type selector as two buttons — deterministic RTL, no BaseWeb radio.
+    # Selection lives in st.session_state[state_key] as "private"/"shared".
+    # Returns True when "shared" is selected.
+    def _kind_selector(state_key, default_shared):
+        if st.session_state.get(state_key) not in ("private", "shared"):
+            st.session_state[state_key] = "shared" if default_shared else "private"
+        cur = st.session_state[state_key]
+        st.markdown('<div style="direction:rtl;text-align:right;font-weight:700;'
+                    'color:#374151;margin-bottom:4px;">סוג הביקור</div>',
+                    unsafe_allow_html=True)
+        # Columns left→right: shared, private → reads RTL as "פרטי  משותף".
+        k_shared, k_private = st.columns(2, gap="small")
+        if k_private.button(VISIT_KIND_PRIVATE, key=f"{state_key}__priv",
+                            use_container_width=True,
+                            type="primary" if cur == "private" else "secondary"):
+            st.session_state[state_key] = "private"
+            st.rerun()
+        if k_shared.button(VISIT_KIND_SHARED, key=f"{state_key}__shared",
+                           use_container_width=True,
+                           type="primary" if cur == "shared" else "secondary"):
+            st.session_state[state_key] = "shared"
+            st.rerun()
+        return st.session_state[state_key] == "shared"
+
+    gtab1, gtab2, gtab3, gtab4, gtab5, gtab6, gtab7 = st.tabs([
+        "📅 קביעת מועדים", "🗂️ צפייה/עדכון מועדים", "📋 ביקורים",
+        "👥 נכדים/ות", "📧 מנהלים", "👵 סבתות", "📸 גלריה",
     ])
 
-    # ── TAB 1: Slots ──────────────────────────────────────────
+    # ── TAB 1: Create slots — add availability windows (קביעת מועדים) ──
     with gtab1:
         try:
             # Deploy/version marker — confirms this exact block is the rendered screen.
-            st.caption("version: grandma-slots-screen-v7")
-
-            # Clear, family-friendly visit-type labels — used in add + edit.
-            VISIT_KIND_PRIVATE = "ביקור פרטי"
-            VISIT_KIND_SHARED = "ביקור משותף — ניתן לצרף משפחות נוספות"
-
-            # Strong rose ACTIVE state on the filter buttons (req. 4); scoped to the
-            # filter keys via Streamlit's st-key-<key> wrapper class.
-            st.markdown("""
-            <style>
-            .st-key-ga_filt_future [data-testid="stBaseButton-primary"],
-            .st-key-ga_filt_hist [data-testid="stBaseButton-primary"] {
-                background: #db2777 !important; border-color: #db2777 !important;
-                color: #ffffff !important; font-weight: 800 !important;
-                box-shadow: 0 2px 10px rgba(219,39,119,0.35) !important;
-            }
-            </style>
-            """, unsafe_allow_html=True)
-
-            # Small right-aligned RTL banner helper (reliable; no BaseWeb dependency).
-            def _ga_banner(text, *, bg, border, color):
-                st.markdown(
-                    f'<div style="direction:rtl;text-align:right;background:{bg};'
-                    f'border:1px solid {border};color:{color};border-radius:10px;'
-                    f'padding:10px 14px;font-weight:700;margin:6px 0;">{safe(text)}</div>',
-                    unsafe_allow_html=True,
-                )
-
-            # RTL visit-type selector as two buttons (req. 3) — deterministic RTL, no
-            # BaseWeb radio. Selection lives in st.session_state[state_key] as
-            # "private"/"shared". Returns True when "shared" is selected.
-            def _kind_selector(state_key, default_shared):
-                if st.session_state.get(state_key) not in ("private", "shared"):
-                    st.session_state[state_key] = "shared" if default_shared else "private"
-                cur = st.session_state[state_key]
-                st.markdown('<div style="direction:rtl;text-align:right;font-weight:700;'
-                            'color:#374151;margin-bottom:4px;">סוג הביקור</div>',
-                            unsafe_allow_html=True)
-                # Columns left→right: shared, private → reads RTL as "פרטי  משותף".
-                k_shared, k_private = st.columns(2, gap="small")
-                if k_private.button(VISIT_KIND_PRIVATE, key=f"{state_key}__priv",
-                                    use_container_width=True,
-                                    type="primary" if cur == "private" else "secondary"):
-                    st.session_state[state_key] = "private"
-                    st.rerun()
-                if k_shared.button(VISIT_KIND_SHARED, key=f"{state_key}__shared",
-                                   use_container_width=True,
-                                   type="primary" if cur == "shared" else "secondary"):
-                    st.session_state[state_key] = "shared"
-                    st.rerun()
-                return st.session_state[state_key] == "shared"
+            st.caption("version: grandma-admin-tabs-v1")
 
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת מועד ביקור</p>',
@@ -1457,7 +1460,14 @@ def grandma_admin_view():
                         else:
                             _ga_banner("המועד כבר קיים לסבתא הזו",
                                        bg="#fef2f2", border="#fca5a5", color="#991b1b")
+        except Exception:
+            logger.exception("[GRANDMA_ADMIN] create-slot tab error")
+            st.error("שגיאה בטעינת טופס המועד.")
 
+    # ── TAB 2: View / update slots — manage availability (צפייה/עדכון מועדים) ──
+    with gtab2:
+        try:
+            st.caption("version: grandma-admin-tabs-v1")
             with st.container(border=True):
                 # Filter row as 2 buttons (req. 1): one title, options right→left beside it.
                 if st.session_state.get("ga_slot_filter") not in ("עתידיים", "היסטוריה"):
@@ -1605,8 +1615,8 @@ def grandma_admin_view():
             logger.exception("[GRANDMA_ADMIN] slots tab error")
             st.error("שגיאה בטעינת המועדים.")
 
-    # ── TAB 2: Bookings ───────────────────────────────────────
-    with gtab2:
+    # ── TAB 3: Bookings — actual visit records (ביקורים) ──────
+    with gtab3:
         try:
             st.markdown('<p class="sec-title" style="direction:rtl;">📋 כל הביקורים</p>',
                         unsafe_allow_html=True)
@@ -1635,8 +1645,8 @@ def grandma_admin_view():
             logger.exception("[GRANDMA_ADMIN] bookings tab error")
             st.error("שגיאה בטעינת הביקורים.")
 
-    # ── TAB 3: Descendants ────────────────────────────────────
-    with gtab3:
+    # ── TAB 4: Descendants ────────────────────────────────────
+    with gtab4:
         try:
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת נכד/ה</p>',
@@ -1689,16 +1699,16 @@ def grandma_admin_view():
             logger.exception("[GRANDMA_ADMIN] descendants tab error")
             st.error("שגיאה בטעינת רשימת הנכדים.")
 
-    # ── TAB 4: Managers ───────────────────────────────────────
-    with gtab4:
+    # ── TAB 5: Managers ───────────────────────────────────────
+    with gtab5:
         try:
             _render_managers_admin(supabase, key_prefix="ga")
         except Exception:
             logger.exception("[GRANDMA_ADMIN] managers tab error")
             st.error("שגיאה בטעינת המנהלים.")
 
-    # ── TAB 5: Grandmas ───────────────────────────────────────
-    with gtab5:
+    # ── TAB 6: Grandmas ───────────────────────────────────────
+    with gtab6:
         try:
             with st.container(border=True):
                 st.markdown('<p class="sec-title" style="direction:rtl;">➕ הוספת סבתא</p>',
@@ -1789,8 +1799,8 @@ def grandma_admin_view():
             logger.exception("[GRANDMA_ADMIN] grandmas tab error")
             st.error("שגיאה בטעינת הסבתות.")
 
-    # ── TAB 6: Gallery ────────────────────────────────────────
-    with gtab6:
+    # ── TAB 7: Gallery ────────────────────────────────────────
+    with gtab7:
         try:
             st.markdown('<p class="sec-title" style="direction:rtl;">📸 גלריית תמונות</p>',
                         unsafe_allow_html=True)
